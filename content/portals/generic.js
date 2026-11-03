@@ -216,7 +216,7 @@ var OriginFillGeneric = (() => {
           // A list that loads its options as you type has (almost) none in the page yet
           const widget = enhancedWidget(element);
           if (widget && loadsOptionsAsYouType(element)) return await fillWidgetList(field, widget, candidates, { allowOther });
-          return await OriginFillDom.selectNativeOption(element, candidates, { allowOther });
+          return await OriginFillDom.selectNativeOption(element, candidates, { allowOther, fieldType: field.fieldType });
         }
         case 'checkbox':
           return await OriginFillDom.setCheckbox(element, value === true || /^(true|yes|y|1)$/i.test(String(value)));
@@ -358,9 +358,9 @@ var OriginFillGeneric = (() => {
     let results = [];
     let match = null;
     for (const term of searchTerms(field.fieldType, candidates)) {
-      results = await searchWidget(widget, term, candidates);
+      results = await searchWidget(widget, term, candidates, field.fieldType);
       if (results === null) return { success: false, note: 'The list did not open', debug: OriginFillDom.sketch(widget, 3) };
-      match = OriginFillFuzzyMatch.pickOption(results, candidates);
+      match = OriginFillFuzzyMatch.pickOption(results, candidates, { fieldType: field.fieldType });
       if (match) break;
     }
     if (!match && allowOther) {
@@ -397,10 +397,6 @@ var OriginFillGeneric = (() => {
     return { success: true, note: match.confidence === 'exact' ? '' : `Selected "${match.text}"` };
   }
 
-  // Words that don't tell one college from another
-  const COMMON_NAME_WORDS = new Set(['university', 'college', 'institute', 'institution', 'school', 'of', 'the', 'and', 'for',
-    'engineering', 'technology', 'science', 'sciences', 'arts', 'management', 'national', 'state', 'government', 'deemed']);
-
   /**
    * What to type into a list's search box, best first: country lists search full names ("USA"
    * finds nothing), and a college is also tried by its distinctive word ("Vaageshwari") in
@@ -409,10 +405,8 @@ var OriginFillGeneric = (() => {
    */
   function searchTerms(fieldType, candidates) {
     const terms = fieldType === 'country' ? candidates.filter(c => c.length > 3) : [candidates[0], candidates[1]];
-    if (['institution', 'fieldOfStudy', 'company'].includes(fieldType)) {
-      const distinctive = String(candidates[0]).split(/[\s,.()-]+/).find(w => w.length >= 4 && !COMMON_NAME_WORDS.has(w.toLowerCase()));
-      if (distinctive && distinctive !== candidates[0]) terms.push(distinctive);
-    }
+    const distinctive = OriginFillFuzzyMatch.distinctiveWord(candidates[0], fieldType);
+    if (distinctive && distinctive !== candidates[0]) terms.push(distinctive);
     return [...new Set(terms.filter(Boolean))].slice(0, 3);
   }
 
@@ -422,7 +416,7 @@ var OriginFillGeneric = (() => {
    * already hold a match.
    * @returns {Promise<Array<{el: HTMLElement, text: string}>|null>} null when it didn't open
    */
-  async function searchWidget(widget, term, candidates) {
+  async function searchWidget(widget, term, candidates, fieldType) {
     let search = openSearchBox(widget);
     if (!search) {
       const opener = widget.querySelector(WIDGET.opener) || widget;
@@ -451,7 +445,7 @@ var OriginFillGeneric = (() => {
       const stable = signature === last;
       last = signature;
       if (!stable) return null;
-      if (signature === previous && !OriginFillFuzzyMatch.pickOption(options, candidates)) return null;
+      if (signature === previous && !OriginFillFuzzyMatch.pickOption(options, candidates, { fieldType })) return null;
       return options;
     }, { timeout: OriginFillTiming.SEARCH_TIMEOUT, interval: 150 });
 
@@ -522,7 +516,7 @@ var OriginFillGeneric = (() => {
       return input.value ? { success: true, note: 'Typed — no suggestions appeared' } : { success: false, note: 'No suggestions' };
     }
 
-    let match = options ? OriginFillFuzzyMatch.pickOption(options, candidates) : null;
+    let match = options ? OriginFillFuzzyMatch.pickOption(options, candidates, { fieldType: field.fieldType }) : null;
     if (!match && allowOther) {
       // Not in the list: its "Other" / "Not listed" entry, already shown or found by searching
       match = (options && OriginFillFuzzyMatch.pickOtherOption(options)) || null;

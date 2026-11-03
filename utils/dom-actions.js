@@ -400,13 +400,13 @@ var OriginFillDom = (() => {
    *   nothing matches (colleges and courses a form doesn't list)
    * @returns {Promise<{ success: boolean, note: string, usedOther?: boolean }>}
    */
-  async function selectNativeOption(select, values, { allowOther = false } = {}) {
+  async function selectNativeOption(select, values, { allowOther = false, fieldType } = {}) {
     const candidates = (Array.isArray(values) ? values : [values]).map(String);
     const options = Array.from(select.options)
       .filter(o => !o.disabled && o.value !== '')
       .map(o => ({ el: o, text: o.textContent.trim() }));
 
-    const match = OriginFillFuzzyMatch.pickOption(options, candidates) ||
+    const match = OriginFillFuzzyMatch.pickOption(options, candidates, { fieldType }) ||
       (allowOther ? OriginFillFuzzyMatch.pickOtherOption(options) : null);
     if (!match) return { success: false, note: `No option matches "${candidates[0]}"` };
     const usedOther = match.confidence === 'other';

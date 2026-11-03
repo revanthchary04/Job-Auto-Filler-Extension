@@ -686,7 +686,7 @@ var OriginFillWorkday = (() => {
     try {
       switch (field.control) {
         case 'dropdown':
-          return await fillDropdown(field.element, candidates, { allowOther });
+          return await fillDropdown(field.element, candidates, { allowOther, fieldType: field.fieldType });
         case 'prompt':
           return await fillPrompt(field, value, context.profile, context.candidates);
         case 'date':
@@ -698,7 +698,7 @@ var OriginFillWorkday = (() => {
         case 'checkboxGroup':
           return await OriginFillDom.chooseCheckboxes(field.parts.checkboxes, candidates.map(toChoice), radioLabel);
         case 'select':
-          return await OriginFillDom.selectNativeOption(field.element, candidates, { allowOther });
+          return await OriginFillDom.selectNativeOption(field.element, candidates, { allowOther, fieldType: field.fieldType });
         case 'richtext':
           return await OriginFillDom.fillRichText(field.element, formatText(field, value, context.profile));
         case 'file':
@@ -832,7 +832,7 @@ var OriginFillWorkday = (() => {
    * @param {string[]} candidates - Profile value followed by aliases
    * @returns {Promise<{ success: boolean, note: string }>}
    */
-  async function fillDropdown(button, candidates, { allowOther = false } = {}) {
+  async function fillDropdown(button, candidates, { allowOther = false, fieldType } = {}) {
     const current = getButtonValue(button);
     if (current && candidates.some(c => OriginFillFuzzyMatch.isSameText(current, c))) {
       return { success: true, note: '' };
@@ -841,7 +841,7 @@ var OriginFillWorkday = (() => {
     const listbox = await openListbox(button);
     if (!listbox) return { success: false, note: 'Dropdown did not open' };
 
-    const match = await findOptionInList(listbox, candidates, { allowOther });
+    const match = await findOptionInList(listbox, candidates, { allowOther, fieldType });
     if (!match) {
       const sample = listOptions(listbox).slice(0, 4).map(o => o.text).join(', ');
       await closeListbox(button, listbox);
@@ -939,7 +939,7 @@ var OriginFillWorkday = (() => {
    * An exact match wins immediately; otherwise the whole list is scanned so a weak early match
    * ("United Arab Emirates") can't beat a better one further down ("United States of America").
    */
-  async function findOptionInList(listbox, candidates, { allowOther = false } = {}) {
+  async function findOptionInList(listbox, candidates, { allowOther = false, fieldType } = {}) {
     const rank = { exact: 3, high: 2, medium: 1 };
     const scroller = findScrollable(listbox);
     const atEnd = () => !scroller || scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
@@ -948,7 +948,7 @@ var OriginFillWorkday = (() => {
 
     for (let pass = 0; pass < 80; pass++) {
       const options = listOptions(listbox);
-      const match = OriginFillFuzzyMatch.pickOption(options, candidates);
+      const match = OriginFillFuzzyMatch.pickOption(options, candidates, { fieldType });
       if (match && match.confidence === 'exact') return match;
       if (match && (!best || rank[match.confidence] > rank[best.confidence])) {
         best = { ...match, scrollTop: scroller ? scroller.scrollTop : 0 };
@@ -1058,12 +1058,15 @@ var OriginFillWorkday = (() => {
         if (code) candidates.push(`${name} (${code})`);
         candidates.push(name);
       });
-      return { searches: [...new Set(searches)], candidates, codeHint: code };
+      return { searches: [...new Set(searches)], candidates, codeHint: code, fieldType };
     }
 
     const candidates = OriginFillFieldMapper.getValueAliases(fieldType, value);
     const searches = fieldType === 'country' ? candidates.filter(c => c.length > 3) : [value];
-    return { searches: searches.length ? searches : [value], candidates, allowOther: OriginFillFieldMapper.allowsOtherOption(fieldType) };
+    // A college or subject the list spells differently is still found by its distinctive word
+    const distinctive = OriginFillFuzzyMatch.distinctiveWord(value, fieldType);
+    if (distinctive && distinctive !== value) searches.push(distinctive);
+    return { searches: searches.length ? searches : [value], candidates, fieldType, allowOther: OriginFillFieldMapper.allowsOtherOption(fieldType) };
   }
 
   // How this page accepts a pick ('click' or 'keyboard'), learnt from the first value that
@@ -1079,7 +1082,7 @@ var OriginFillWorkday = (() => {
     if (hasSelection(field, query.candidates)) return { success: true, note: '' };
 
     let pick = (list) => {
-      const match = OriginFillFuzzyMatch.pickOption(list, query.candidates);
+      const match = OriginFillFuzzyMatch.pickOption(list, query.candidates, { fieldType: query.fieldType });
       return match || (query.codeHint ? list.find(o => o.text.includes(`(${query.codeHint})`)) || null : null);
     };
 
@@ -1346,7 +1349,7 @@ var OriginFillWorkday = (() => {
       const stable = signature === last;
       last = signature;
       if (!stable) return null;
-      if (signature === previous && !OriginFillFuzzyMatch.pickOption(options, candidates)) return null;
+      if (signature === previous && !OriginFillFuzzyMatch.pickOption(options, candidates, { fieldType: field.fieldType })) return null;
       return options;
     }, { timeout: OriginFillTiming.SEARCH_TIMEOUT, interval: 200 });
     if (result === 'empty') return [];

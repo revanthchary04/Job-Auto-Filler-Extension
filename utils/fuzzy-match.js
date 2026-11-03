@@ -449,15 +449,21 @@ var OriginFillFuzzyMatch = (() => {
    * @param {string[]} candidates
    * @returns {{ el: any, text: string, confidence: string }|null}
    */
-  function pickOption(options, candidates) {
+  function pickOption(options, candidates, { fieldType } = {}) {
     const usable = options.filter(o => o.text && o.text.trim());
     const values = candidates.filter(c => c !== undefined && c !== null && String(c).trim()).map(String);
     if (usable.length === 0 || values.length === 0) return null;
+
+    // Skills keep their symbols: "C++" and "C#" are not "C"
+    if (fieldType === 'skills') return pickSameSkill(usable, values);
 
     for (const value of values) {
       const exact = usable.find(o => isSameText(o.text, value));
       if (exact) return { ...exact, confidence: 'exact' };
     }
+
+    // Names: a near match is a different college or subject
+    if (NAME_OPTIONAL_WORDS[fieldType]) return pickCoveringName(usable, values, NAME_OPTIONAL_WORDS[fieldType]);
 
     // "4" years against "0-2 years", "3-5 years", "5+ years" — word matching would just see "years"
     if (NUMERIC_ANSWER.test(values[0].trim())) {
@@ -472,6 +478,129 @@ var OriginFillFuzzyMatch = (() => {
       }
     }
 
+    return null;
+  }
+
+  // ─── Names: colleges, subjects, skills ─────────────────────────
+
+  /**
+   * Words a name can drop and still be the same name, per field. Every other word must be in
+   * the option: "Vasavi College of Pharmacy" is not "Vasavi College of Engineering", and
+   * "Computer Engineering" is not "Computer Science". Subjects often leave out "Engineering"
+   * ("Mechanical" = "Mechanical Engineering").
+   */
+  const NAME_OPTIONAL_WORDS = Object.freeze({
+    institution: new Set(['of', 'the', 'and', 'for', 'in', 'at', 'with']),
+    fieldOfStudy: new Set(['of', 'the', 'and', 'for', 'in', 'with', 'engineering', 'studies', 'major', 'honours', 'honors']),
+    company: new Set(['the', 'and', 'of', 'inc', 'llc', 'ltd', 'limited', 'pvt', 'private', 'corp', 'corporation', 'co', 'company', 'group'])
+  });
+
+  // Words that find nothing useful in a search box
+  const SEARCH_SKIP_WORDS = new Set(['university', 'college', 'institute', 'institution', 'school', 'of', 'the', 'and', 'for', 'in', 'at',
+    'engineering', 'technology', 'science', 'sciences', 'arts', 'commerce', 'management', 'national', 'state', 'government',
+    'deemed', 'autonomous', 'campus', 'academy', 'polytechnic', 'research', 'studies']);
+
+  // Short forms lists use for the same word
+  const WORD_FORMS = Object.freeze({
+    engg: 'engineering', eng: 'engineering', engr: 'engineering', tech: 'technology', technological: 'technology',
+    inst: 'institute', instt: 'institute', univ: 'university', govt: 'government', sci: 'science', sciences: 'science',
+    mgmt: 'management', st: 'saint'
+  });
+
+  const LINKING_WORDS = new Set(['and', 'of', 'the', 'for', 'in', 'at', 'with']);
+
+  function nameWords(text) {
+    return String(text || '').toLowerCase().replace(/&/g, ' and ').split(/[^a-z0-9+#]+/).filter(Boolean).map(w => WORD_FORMS[w] || w);
+  }
+
+  /**
+   * Whether a word of a name is in an option: the same word, a longer/shorter form
+   * ("Communication"/"Communications"), or an acronym of its words ("IIT" = Indian Institute of
+   * Technology, "CSE" = Computer Science and Engineering). Acronyms only count when written in
+   * capitals.
+   */
+  function optionHasWord(optionText, word, acronym) {
+    const words = nameWords(optionText);
+    if (words.some(w => w === word || (word.length >= 4 && w.startsWith(word)) || (w.length >= 4 && word.startsWith(w)))) {
+      return 'word';
+    }
+    if (acronym && word.length >= 2 && word.length <= 6) {
+      const initials = words.filter(w => !LINKING_WORDS.has(w)).map(w => w[0]).join('');
+      if (initials.includes(word)) return 'acronym';
+    }
+    return null;
+  }
+
+  /**
+   * The option holding every word of the name that matters. Words after a comma or in brackets
+   * ("…, Karimnagar") are where the place is, which lists often leave out, so they're optional.
+   * Of several, the one with the fewest extra words wins.
+   */
+  function pickCoveringName(options, values, optionalWords) {
+    for (const value of values) {
+      const main = value.split(/,|\(|\s[-–—]\s/)[0];
+      const rawWords = main.split(/[^A-Za-z0-9+#&]+/).filter(Boolean);
+      const words = nameWords(main);
+      const distinctive = words.filter(w => !optionalWords.has(w));
+      const required = distinctive.length ? distinctive : words;
+      if (required.length === 0) continue;
+      const isAcronym = (w) => rawWords.some(r => r.toLowerCase() === w && /^[A-Z]{2,6}$/.test(r));
+
+      let best = null;
+      for (const option of options) {
+        const found = required.map(w => optionHasWord(option.text, w, isAcronym(w)));
+        if (found.some(f => !f)) continue;
+        const extra = nameWords(option.text).length - words.length;
+        const confidence = found.includes('acronym') ? 'medium' : 'high';
+        if (!best || extra < best.extra) best = { option, extra, confidence };
+      }
+      if (best) return { ...best.option, confidence: best.confidence };
+    }
+    return null;
+  }
+
+  /**
+   * The word of a college or subject name that finds it in a search box ("Vaageshwari"), when
+   * the list may spell the rest differently.
+   * @returns {string} '' when every word is generic
+   */
+  function distinctiveWord(value, fieldType) {
+    if (!NAME_OPTIONAL_WORDS[fieldType]) return '';
+    const main = String(value || '').split(/,|\(|\s[-–—]\s/)[0];
+    return main.split(/[^A-Za-z0-9+#]+/).find(w => w.length >= 4 && !SEARCH_SKIP_WORDS.has(w.toLowerCase()) && !WORD_FORMS[w.toLowerCase()]) || '';
+  }
+
+  function skillKey(text) {
+    return String(text || '').toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9+#]/g, '');
+  }
+
+  /**
+   * The names an option goes by: "Cascading Style Sheets (CSS)" is also "CSS", "Java
+   * (Programming Language)" is "Java", "CSS3" and "Python 3" are "CSS" and "Python".
+   */
+  function skillNames(text) {
+    const t = String(text || '');
+    const parts = [t, t.replace(/\(.*?\)/g, ' ').trim(), ...(t.match(/\(([^)]+)\)/g) || []).map(m => m.slice(1, -1)), t.split(/\s[-–—:]\s|:\s/)[0]];
+    const names = new Set();
+    parts.forEach(part => {
+      names.add(skillKey(part));
+      names.add(skillKey(part.replace(/[\s-]*v?\d+(\.\d+)*\+?$/i, '')));
+    });
+    names.delete('');
+    return names;
+  }
+
+  /**
+   * The option that is the same skill, or nothing: skills that share a word are different
+   * skills ("CSS" and "CSS ML", "React" and "React Native", "Java" and "JavaScript").
+   */
+  function pickSameSkill(options, values) {
+    for (const value of values) {
+      const want = skillKey(value);
+      if (!want) continue;
+      const found = options.find(o => skillKey(o.text) === want) || options.find(o => skillNames(o.text).has(want));
+      if (found) return { ...found, confidence: skillKey(found.text) === want ? 'exact' : 'high' };
+    }
     return null;
   }
 
@@ -561,6 +690,7 @@ var OriginFillFuzzyMatch = (() => {
     matchSelectOptions,
     pickOption,
     pickOtherOption,
+    distinctiveWord,
     otherOptionScore,
     isSameText,
     levenshteinDistance,

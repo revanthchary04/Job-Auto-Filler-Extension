@@ -291,6 +291,34 @@ var OriginFillFieldMapper = (() => {
     { test: /\b(ph\.?\s?d|doctor|doctorate)/i, aliases: ['Doctorate', 'PhD', 'Ph.D.', 'Doctoral Degree', 'Doctor of Philosophy', 'Doctorate Degree'] }
   ]);
 
+  // Names one skill goes by. Skills are matched by name only ("CSS" is never "CSS ML"), so
+  // lists that use the other name still need to be found
+  const SKILL_ALIASES = Object.freeze([
+    ['JavaScript', 'JS', 'ECMAScript'],
+    ['TypeScript', 'TS'],
+    ['Node.js', 'NodeJS', 'Node'],
+    ['React', 'React.js', 'ReactJS'],
+    ['Vue.js', 'Vue', 'VueJS'],
+    ['Kubernetes', 'K8s'],
+    ['PostgreSQL', 'Postgres'],
+    ['MongoDB', 'Mongo'],
+    ['Amazon Web Services', 'AWS'],
+    ['Google Cloud Platform', 'GCP', 'Google Cloud'],
+    ['Microsoft Azure', 'Azure'],
+    ['C#', 'C Sharp', 'CSharp'],
+    ['C++', 'CPP'],
+    ['Go', 'Golang'],
+    ['Machine Learning', 'ML'],
+    ['Artificial Intelligence', 'AI'],
+    ['Natural Language Processing', 'NLP'],
+    ['HTML', 'HTML5'],
+    ['CSS', 'CSS3', 'Cascading Style Sheets'],
+    ['SQL', 'Structured Query Language'],
+    ['.NET', 'dotnet', 'DotNet'],
+    ['Microsoft Excel', 'Excel', 'MS Excel'],
+    ['Power BI', 'PowerBI']
+  ]);
+
   const PHONE_TYPE_ALIASES = Object.freeze([
     { test: /\b(mobile|cell|cellular)\b/i, aliases: ['Mobile', 'Cell', 'Mobile Phone', 'Cell Phone', 'Personal Mobile', 'Cellular'] },
     { test: /\bhome\b/i, aliases: ['Home', 'Home Phone', 'Landline', 'Personal'] },
@@ -867,6 +895,12 @@ var OriginFillFieldMapper = (() => {
         if (/^(y|yes|true)$/i.test(str)) out.push('Yes', 'True');
         if (/^(n|no|false)$/i.test(str)) out.push('No', 'False');
         break;
+      case 'skills': {
+        const key = (s) => s.toLowerCase().replace(/[^a-z0-9+#]/g, '');
+        const group = SKILL_ALIASES.find(names => names.some(n => key(n) === key(str)));
+        if (group) out.push(...group);
+        break;
+      }
       case 'eduStartYear':
       case 'eduEndYear': {
         // A year list only has the year ("2026"), even when the profile has "05/2026"

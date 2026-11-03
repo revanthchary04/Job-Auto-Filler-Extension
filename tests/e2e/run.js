@@ -50,7 +50,7 @@ const PROFILE = {
   education: [
     { institution: 'Stanford University', degree: "Master's", fieldOfStudy: 'Computer Science', startYear: '2016', endYear: '05/2018', gpa: '3.9', location: '' }
   ],
-  skills: ['Python', 'JavaScript', 'SQL', 'Rust'],
+  skills: ['Python', 'JavaScript', 'SQL', 'CSS', 'Rust'],
   certifications: [],
   languages: [],
   resume: { defaultId: '', fileName: '', fileData: '', uploadedAt: '' }
@@ -364,7 +364,8 @@ async function main() {
     check('field of study', s2['edu0.fieldOfStudy'], ['Computer Science']);
     check('GPA', s2['edu0.gpa'], '3.9');
     check('education years', [s2['edu0.from'], s2['edu0.to']], [{ month: '', year: '2016' }, { month: '', year: '2018' }]);
-    check('skills that exist in Workday\'s list', s2.skills, ['Python', 'JavaScript', 'SQL']);
+    check('skills that exist in Workday\'s list', s2.skills, ['Python', 'JavaScript', 'SQL', 'Cascading Style Sheets (CSS)']);
+    check('"CSS" is never "CSS ML"', s2.skills.includes('CSS ML'), false);
     check('never unticks a skill it picked', (await page.evaluate(() => window.__mockEvents)).filter(e => e.startsWith('pick:') && /Python|JavaScript|SQL/.test(e)).length, 3);
     check('reports the skill it could not find', (exp.results || []).some(r => /Rust/.test(r.note || '')), true);
     check('uploads the résumé', (s2.resumeFiles || []).map(f => f.name), ['Ada_Lovelace_Resume.pdf']);
@@ -449,7 +450,7 @@ async function main() {
         { company: 'Analytical Engines', jobTitle: 'Intern', location: 'Hyderabad', isCurrent: false, startDate: '01-01-2019', endDate: '30-06-2019', bullets: [] }
       ],
       education: [
-        { institution: 'Vasavi College of Engineering', degree: 'B.Tech', fieldOfStudy: 'Electronics and Communication', startYear: '2015', endYear: '2019', gpa: '8.4', location: '' }
+        { institution: 'Vaageshwari College of Engineering', degree: 'B.Tech', fieldOfStudy: 'Electronics and Communication', startYear: '2015', endYear: '2019', gpa: '8.4', location: '' }
       ]
     });
     const strict = await context.newPage();
@@ -459,15 +460,17 @@ async function main() {
     const strictReport = await autofill(strict, sw);
     const s5 = await state(strict);
     const strictEvents = await strict.evaluate(() => window.__mockEvents);
-    check('picks skills with the keyboard when clicks are ignored', s5.skills, ['Python', 'JavaScript', 'SQL']);
+    check('picks skills with the keyboard when clicks are ignored', s5.skills, ['Python', 'JavaScript', 'SQL', 'Cascading Style Sheets (CSS)']);
     check('used the keyboard', strictEvents.filter(e => e.startsWith('pick:keyboard:')).length >= 3, true);
     check('job 1 from "21-12-2020" / "05-06-2022" (India → day first)', [s5['work0.from'], s5['work0.to']], [{ month: '12', year: '2020' }, { month: '06', year: '2022' }]);
     check('job 1 title/company', [s5['work0.jobTitle'], s5['work0.company']], ['Software Engineer', 'Numpy']);
     check('job 2 from "01-01-2019" / "30-06-2019"', [s5['work1.from'], s5['work1.to']], [{ month: '01', year: '2019' }, { month: '06', year: '2019' }]);
-    check('college Workday doesn\'t list → "Other"', s5['edu0.school'], ['Other']);
-    check('field of study it doesn\'t list → "Other - Not Listed"', s5['edu0.fieldOfStudy'], ['Other - Not Listed']);
+    check('college spelled differently in Workday ("Engg, Karimnagar"), not its look-alike', s5['edu0.school'], ['Vaageshwari College of Engg, Karimnagar']);
+    check('field of study it doesn\'t list → "Other - Not Listed", not "Electronics and Instrumentation"', s5['edu0.fieldOfStudy'], ['Other - Not Listed']);
     check('"B.Tech" → "Bachelor\'s Degree"', s5['edu0.degree'], "Bachelor's Degree");
-    check('flags the "Other" picks for a look', (strictReport.results || []).filter(r => /isn't in Workday's list/.test(r.note || '')).map(r => r.status), ['attention', 'attention']);
+    check('education years', [s5['edu0.from'], s5['edu0.to']], [{ month: '', year: '2015' }, { month: '', year: '2019' }]);
+    check('GPA', s5['edu0.gpa'], '8.4');
+    check('flags the "Other" pick for a look', (strictReport.results || []).filter(r => /isn't in Workday's list/.test(r.note || '')).map(r => r.status), ['attention']);
     check('no failed fields (keyboard path)', rowsWith(strictReport, 'failed'), []);
     check('keyboard path stays quick (under 30 seconds)', strictReport.elapsed < 30000, true);
     await sw.evaluate(async (profile) => {

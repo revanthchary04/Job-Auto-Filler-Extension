@@ -421,3 +421,77 @@ describe('OriginFillDom.sketch', () => {
     expect(out).not.toMatch(/Vaageshwari|=7/);
   });
 });
+
+describe('Names are matched strictly (skills, colleges, subjects)', () => {
+  const options = (texts) => texts.map(text => ({ el: text, text }));
+  const pick = (texts, fieldType, value) => {
+    const match = OriginFillFuzzyMatch.pickOption(options(texts), OriginFillFieldMapper.getValueAliases(fieldType, value), { fieldType });
+    return match ? match.text : null;
+  };
+
+  describe('skills', () => {
+    it('never takes a different skill that shares a word', () => {
+      expect(pick(['CSS ML', 'CSS Grid'], 'skills', 'CSS')).toBeNull();
+      expect(pick(['React Native', 'React Router'], 'skills', 'React')).toBeNull();
+      expect(pick(['JavaScript', 'Java EE'], 'skills', 'Java')).toBeNull();
+    });
+
+    it('finds the same skill under another way of writing it', () => {
+      expect(pick(['CSS ML', 'Cascading Style Sheets (CSS)'], 'skills', 'CSS')).toBe('Cascading Style Sheets (CSS)');
+      expect(pick(['CSS ML', 'CSS3'], 'skills', 'CSS')).toBe('CSS3');
+      expect(pick(['JavaScript', 'Java (Programming Language)'], 'skills', 'Java')).toBe('Java (Programming Language)');
+      expect(pick(['Python Django', 'Python 3'], 'skills', 'Python')).toBe('Python 3');
+      expect(pick(['React Native', 'React.js'], 'skills', 'React')).toBe('React.js');
+      expect(pick(['JavaScript', 'Java'], 'skills', 'JS')).toBe('JavaScript');
+      expect(pick(['Kubernetes', 'Docker'], 'skills', 'K8s')).toBe('Kubernetes');
+      expect(pick(['C', 'C++', 'C#'], 'skills', 'C++')).toBe('C++');
+    });
+  });
+
+  describe('colleges', () => {
+    it('never takes a look-alike college', () => {
+      expect(pick(['Vaagdevi College of Engineering', 'Vasavi College of Engineering'], 'institution', 'Vaageshwari College of Engineering')).toBeNull();
+      expect(pick(['Vasavi College of Pharmacy'], 'institution', 'Vasavi College of Engineering')).toBeNull();
+      expect(pick(['Osmania College'], 'institution', 'Osmania University')).toBeNull();
+    });
+
+    it('finds the same college written differently', () => {
+      expect(pick(['Vaagdevi College of Engineering', 'Vaageshwari College of Engineering, Karimnagar'], 'institution', 'Vaageshwari College of Engineering'))
+        .toBe('Vaageshwari College of Engineering, Karimnagar');
+      expect(pick(['Vaageshwari College of Engg'], 'institution', 'Vaageshwari College of Engineering')).toBe('Vaageshwari College of Engg');
+      expect(pick(['Vaageshwari Engineering College'], 'institution', 'Vaageshwari College of Engineering')).toBe('Vaageshwari Engineering College');
+      expect(pick(['Stanford Law School', 'Stanford University'], 'institution', 'Stanford University')).toBe('Stanford University');
+      expect(pick(['Indian Institute of Technology Delhi', 'Indian Institute of Technology Bombay'], 'institution', 'IIT Bombay')).toBe('Indian Institute of Technology Bombay');
+      expect(pick(['Osmania University College of Engineering', 'Osmania University'], 'institution', 'Osmania University')).toBe('Osmania University');
+    });
+
+    it('ignores the town after a comma', () => {
+      expect(pick(['Vaageshwari College of Engineering'], 'institution', 'Vaageshwari College of Engineering, Karimnagar')).toBe('Vaageshwari College of Engineering');
+    });
+  });
+
+  describe('fields of study', () => {
+    it('never takes a neighbouring subject', () => {
+      expect(pick(['Computer Engineering', 'Electrical Engineering'], 'fieldOfStudy', 'Computer Science')).toBeNull();
+      expect(pick(['Electronics and Instrumentation'], 'fieldOfStudy', 'Electronics and Communication')).toBeNull();
+      expect(pick(['Information Science'], 'fieldOfStudy', 'Information Technology')).toBeNull();
+    });
+
+    it('finds the subject with or without "Engineering"', () => {
+      expect(pick(['Computer Engineering', 'Computer Science and Engineering'], 'fieldOfStudy', 'Computer Science')).toBe('Computer Science and Engineering');
+      expect(pick(['Computer Science'], 'fieldOfStudy', 'Computer Science and Engineering')).toBe('Computer Science');
+      expect(pick(['Electronics & Communication Engineering'], 'fieldOfStudy', 'Electronics and Communication')).toBe('Electronics & Communication Engineering');
+      expect(pick(['Computer Science and Engineering', 'Civil Engineering'], 'fieldOfStudy', 'CSE')).toBe('Computer Science and Engineering');
+    });
+  });
+
+  it('searches a college by its distinctive word', () => {
+    expect(OriginFillFuzzyMatch.distinctiveWord('Vaageshwari College of Engineering', 'institution')).toBe('Vaageshwari');
+    expect(OriginFillFuzzyMatch.distinctiveWord('College of Engineering', 'institution')).toBe('');
+    expect(OriginFillFuzzyMatch.distinctiveWord('CSS', 'skills')).toBe('');
+  });
+
+  it('keeps ordinary lists forgiving', () => {
+    expect(OriginFillFuzzyMatch.pickOption(options(['United States of America', 'United Kingdom']), ['United States']).text).toBe('United States of America');
+  });
+});

@@ -387,9 +387,11 @@
     leaves: ['Indeed', 'Glassdoor', 'LinkedIn', 'Twitter', 'Employee Referral', 'Company Website']
   };
   const PHONE_CODES = { leaves: ['Canada (+1)', 'India (+91)', 'United Kingdom (+44)', 'United States of America (+1)'] };
-  const SCHOOLS = { leaves: ['Massachusetts Institute of Technology', 'Other', 'Stanford University', 'University of Texas at Austin', 'University of Washington'] };
-  const FIELDS_OF_STUDY = { leaves: ['Computer Engineering', 'Computer Science', 'Electrical Engineering', 'Mathematics', 'Other - Not Listed'] };
-  const SKILLS = { leaves: ['Java', 'JavaScript', 'Python', 'React', 'SQL', 'TypeScript'] };
+  // Look-alikes included on purpose: the right entry must win, or "Other"
+  const SCHOOLS = { leaves: ['Massachusetts Institute of Technology', 'Other', 'Stanford University', 'University of Texas at Austin', 'University of Washington',
+    'Vaagdevi College of Engineering', 'Vaageshwari College of Engg, Karimnagar', 'Vasavi College of Pharmacy'] };
+  const FIELDS_OF_STUDY = { leaves: ['Computer Engineering', 'Computer Science', 'Electrical Engineering', 'Electronics and Instrumentation', 'Mathematics', 'Other - Not Listed'] };
+  const SKILLS = { leaves: ['CSS ML', 'Cascading Style Sheets (CSS)', 'Java', 'JavaScript', 'Python', 'React', 'React Native', 'SQL', 'TypeScript'] };
 
   // ─── Pages ─────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "OriginFill — Job Application Autofill",
   "short_name": "OriginFill",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Fill Workday job applications in one click: name, contact, work history, education, résumé. Saves your answers if the session times out.",
   "author": "CharyWorld",
   "minimum_chrome_version": "111",

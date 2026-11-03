@@ -1,6 +1,6 @@
 {
   "name": "originfill",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Chrome extension that fills Workday (and other) job applications from your saved profile.",
   "scripts": {
     "test": "jest",

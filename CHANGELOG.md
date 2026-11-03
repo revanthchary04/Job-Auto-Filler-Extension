@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.1
+
+### Fixed
+- **Skills picked the wrong entry** ("CSS" became "CSS ML"). Skills now have to be the same name. Different ways of writing it still count: "Cascading Style Sheets (CSS)", "CSS3", "Java (Programming Language)", "JS" for JavaScript, "K8s" for Kubernetes. A skill that only shares a word ("CSS ML", "React Native", "JavaScript" for Java) is left out and listed in the report instead.
+- **Education picked look-alike colleges and subjects.** A college now has to contain every real word of your college's name: "Vaagdevi College of Engineering" is not "Vaageshwari College of Engineering", and "Vasavi College of Pharmacy" is not "Vasavi College of Engineering".
+  - Short forms and acronyms still match: "Engg" = Engineering, "IIT" = Indian Institute of Technology, "CSE" = Computer Science and Engineering. The town after a comma is optional.
+  - Subjects may drop "Engineering" ("Computer Science" = "Computer Science and Engineering"), but "Computer Engineering" is not "Computer Science".
+  - When nothing matches, the "Other" / "Not listed" choice is used instead of a wrong college.
+- Workday search lists also search a college or subject by its distinctive word ("Vaageshwari") when the full name finds nothing, for lists that spell it differently.
+
 ## 1.4.0
 
 ### Fixed (EY / Yello and other Select2 forms)
