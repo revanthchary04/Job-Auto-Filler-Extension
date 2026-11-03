@@ -22,7 +22,7 @@ OriginFill works in Chrome, Edge, Brave and other Chromium browsers (version 111
 
 1. Download this repository: **Code → Download ZIP** on GitHub (then unzip it), or
    ```bash
-   git clone https://github.com/revanthchary04/Origin---Auto-Filler-Portal.git
+   git clone https://github.com/revanthchary04/Job-Auto-Filler-Extension.git
    ```
 2. Open `chrome://extensions` (Edge: `edge://extensions`).
 3. Turn on **Developer mode** (top-right).
@@ -125,7 +125,7 @@ Workday logs you out after a period of inactivity. OriginFill keeps a copy of wh
 | Résumé not uploaded | Check **Settings → Resume** lists a résumé for the profile you're using (the report says "No résumé saved" otherwise). On Workday's "Autofill with Resume" step, click **⚡ Upload my résumé**. |
 | A question wasn't answered | If the report says "Answer … once in Settings → Common Questions", set it there. Otherwise add it under Saved answers. |
 | "Nothing filled" on another site | OriginFill didn't recognise that site's fields. Turn on **Debug logging**, try again, and open an issue with the `[OriginFill]` console lines and the site's address. |
-| A field was filled wrongly | Fix it by hand, and please [open an issue](https://github.com/revanthchary04/Origin---Auto-Filler-Portal/issues) with the field label and the company's Workday URL. |
+| A field was filled wrongly | Fix it by hand, and please [open an issue](https://github.com/revanthchary04/Job-Auto-Filler-Extension/issues) with the field label and the company's Workday URL. |
 | Need details for a bug report | Click **Copy details** in the report (it appears when a field fails; it copies how the fields are built, never your values). For more, turn on **Settings → Extension Settings → Debug logging**, retry, and copy the `[OriginFill]` lines from the page's DevTools console (F12). |
 | "Month of Graduation" left empty | Write your End Year with its month in **Settings → Education**, e.g. `05/2026`. |
 

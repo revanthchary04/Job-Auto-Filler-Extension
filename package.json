@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/revanthchary04/Origin---Auto-Filler-Portal.git"
+    "url": "git+https://github.com/revanthchary04/Job-Auto-Filler-Extension.git"
   },
   "keywords": [
     "chrome-extension",
@@ -21,9 +21,9 @@
   "license": "AGPL-3.0-only",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/revanthchary04/Origin---Auto-Filler-Portal/issues"
+    "url": "https://github.com/revanthchary04/Job-Auto-Filler-Extension/issues"
   },
-  "homepage": "https://github.com/revanthchary04/Origin---Auto-Filler-Portal#readme",
+  "homepage": "https://github.com/revanthchary04/Job-Auto-Filler-Extension#readme",
   "devDependencies": {
     "jest": "^30.5.1",
     "jest-environment-jsdom": "^29.7.0",
