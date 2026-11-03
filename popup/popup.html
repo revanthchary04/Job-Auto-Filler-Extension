@@ -12,7 +12,7 @@
     <!-- ─── Header ─────────────────────────────────────────── -->
     <header class="popup__header" id="popupHeader">
       <div class="popup__header-left">
-        <img src="../assets/icons/icon32.png" alt="OriginFill" class="popup__logo" width="24" height="24">
+        <img src="../assets/icons/logo128.png" alt="OriginFill" class="popup__logo" width="24" height="24">
         <h1 class="popup__title">OriginFill</h1>
       </div>
       <div class="popup__header-right">
@@ -36,11 +36,22 @@
       <span class="popup__badge-text" id="badgeText">Detecting...</span>
     </div>
 
-    <!-- ─── STATE: Welcome / First Run ─────────────────────── -->
+    <!-- ─── Newer files on disk than Chrome is running (unpacked installs) ─── -->
+    <div class="popup__banner popup__banner--update" id="updateBanner" role="alert" hidden>
+      <div class="popup__banner-text">
+        <strong>Reload OriginFill to use the update</strong>
+        <span id="updateMeta"></span>
+      </div>
+      <div class="popup__banner-actions">
+        <button class="popup__btn popup__btn--primary" id="reloadExtensionBtn">Reload OriginFill</button>
+      </div>
+    </div>
+
+    <!-- ─── STATE: Welcome / Profile Setup ─────────────────── -->
     <section class="popup__state popup__state--welcome" id="stateWelcome" hidden>
       <div class="popup__welcome-icon">👋</div>
       <h2 class="popup__welcome-title">Welcome to OriginFill!</h2>
-      <p class="popup__welcome-desc">Set up your profile to start auto-filling job applications in seconds.</p>
+      <p class="popup__welcome-desc">Add your details once — name, contact, work history, education and résumé — then fill each application page in one click.</p>
       <button class="popup__btn popup__btn--primary popup__btn--full" id="setupProfileBtn">
         <span class="popup__btn-icon">⚙️</span>
         Set Up Profile
@@ -50,14 +61,14 @@
     <!-- ─── STATE: No Form Detected ────────────────────────── -->
     <section class="popup__state popup__state--no-form" id="stateNoForm" hidden>
       <div class="popup__empty-icon">📋</div>
-      <p class="popup__empty-text">No job form detected on this page.</p>
-      <p class="popup__empty-sub">Navigate to a Workday or other job portal to get started.</p>
-      
+      <p class="popup__empty-text" id="noFormText">No job application form detected on this page.</p>
+      <p class="popup__empty-sub" id="noFormSub">Open a Workday (or other) job application. If this page is one, you can still try filling it.</p>
+
       <button class="popup__btn popup__btn--primary popup__btn--full" id="detectDemandBtn">
-        <span class="popup__btn-icon">🔍</span>
-        Detect on this page
+        <span class="popup__btn-icon">⚡</span>
+        Fill this page anyway
       </button>
-      
+
       <button class="popup__btn popup__btn--secondary popup__btn--full popup__btn--mt" id="goSettingsBtn">
         <span class="popup__btn-icon">⚙️</span>
         Go to Settings
@@ -71,11 +82,23 @@
         <span class="popup__page-text" id="pageText">Page 1 of 3 · Personal</span>
       </div>
 
+      <!-- Session recovery offer -->
+      <div class="popup__banner" id="recoveryBanner" hidden>
+        <div class="popup__banner-text">
+          <strong>Restore your answers?</strong>
+          <span id="recoveryMeta"></span>
+        </div>
+        <div class="popup__banner-actions">
+          <button class="popup__btn popup__btn--ghost" id="dismissRecoveryBtn">Dismiss</button>
+          <button class="popup__btn popup__btn--primary" id="restoreBtn">Restore</button>
+        </div>
+      </div>
+
       <!-- Fill buttons -->
       <div class="popup__actions">
         <button class="popup__btn popup__btn--primary popup__btn--full" id="fillAllBtn">
           <span class="popup__btn-icon">⚡</span>
-          Auto-Fill All
+          Auto-Fill This Page
         </button>
         <div class="popup__section-btns">
           <button class="popup__btn popup__btn--section" id="fillPersonalBtn" data-section="personal">
@@ -93,6 +116,8 @@
         </div>
       </div>
 
+      <p class="popup__hint">OriginFill never submits. Review each page, then click <strong>Save and Continue</strong> yourself.</p>
+
       <!-- Last fill summary -->
       <div class="popup__fill-summary" id="fillSummary" hidden>
         <div class="popup__fill-summary-text" id="fillSummaryText"></div>
@@ -100,25 +125,10 @@
       </div>
     </section>
 
-    <!-- ─── STATE: Session Recovery ────────────────────────── -->
-    <section class="popup__state popup__state--recovery" id="stateRecovery" hidden>
-      <div class="popup__recovery-icon">⚠️</div>
-      <h2 class="popup__recovery-title">Session Recovered</h2>
-      <p class="popup__recovery-desc">Your last form data is ready to restore.</p>
-      <div class="popup__recovery-meta" id="recoveryMeta"></div>
-      <div class="popup__recovery-actions">
-        <button class="popup__btn popup__btn--primary" id="restoreBtn">
-          <span class="popup__btn-icon">🔄</span>
-          Restore Now
-        </button>
-        <button class="popup__btn popup__btn--ghost" id="dismissRecoveryBtn">Dismiss</button>
-      </div>
-    </section>
-
     <!-- ─── STATE: Fill In Progress ────────────────────────── -->
     <section class="popup__state popup__state--filling" id="stateFilling" hidden>
       <div class="popup__filling-icon">⚡</div>
-      <h2 class="popup__filling-title">Filling form...</h2>
+      <h2 class="popup__filling-title" id="fillingTitle">Filling form...</h2>
       <div class="popup__progress">
         <div class="popup__progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" id="progressBar">
           <div class="popup__progress-fill" id="progressFill" style="width: 0%"></div>
@@ -126,12 +136,13 @@
         <span class="popup__progress-text" id="progressText">0%</span>
       </div>
       <p class="popup__filling-field" id="fillingField">Preparing...</p>
+      <button class="popup__btn popup__btn--ghost popup__btn--mt" id="cancelFillBtn">Stop</button>
     </section>
 
     <!-- ─── STATE: Fill Complete ───────────────────────────── -->
     <section class="popup__state popup__state--complete" id="stateComplete" hidden>
-      <div class="popup__complete-icon">✅</div>
-      <h2 class="popup__complete-title">Fill Complete</h2>
+      <div class="popup__complete-icon" id="completeIcon">✅</div>
+      <h2 class="popup__complete-title" id="completeTitle">Fill Complete</h2>
       <div class="popup__complete-stats">
         <div class="popup__stat popup__stat--success">
           <span class="popup__stat-num" id="statSuccess">0</span>
@@ -139,7 +150,7 @@
         </div>
         <div class="popup__stat popup__stat--attention">
           <span class="popup__stat-num" id="statAttention">0</span>
-          <span class="popup__stat-label">Attention</span>
+          <span class="popup__stat-label">Review</span>
         </div>
         <div class="popup__stat popup__stat--failed">
           <span class="popup__stat-num" id="statFailed">0</span>
@@ -151,6 +162,15 @@
       <button class="popup__btn popup__btn--secondary popup__btn--full popup__btn--mt" id="fillAgainBtn">
         Fill Again
       </button>
+    </section>
+
+    <!-- ─── STATE: Message (errors, can't run here) ────────── -->
+    <section class="popup__state popup__state--message" id="stateMessage" hidden>
+      <div class="popup__empty-icon" id="messageIcon">⚠️</div>
+      <h2 class="popup__welcome-title" id="messageTitle"></h2>
+      <p class="popup__welcome-desc" id="messageText"></p>
+      <button class="popup__btn popup__btn--primary popup__btn--full" id="messageActionBtn" hidden></button>
+      <button class="popup__btn popup__btn--secondary popup__btn--full popup__btn--mt" id="messageBackBtn">Back</button>
     </section>
 
     <!-- ─── Fill Report (expandable) ───────────────────────── -->
@@ -168,7 +188,7 @@
     <!-- ─── Footer Stats ───────────────────────────────────── -->
     <footer class="popup__footer" id="popupFooter">
       <div class="popup__stats">
-        <span class="popup__stat-item" id="statTimeSaved" title="Time saved">
+        <span class="popup__stat-item" id="statTimeSaved" title="Time saved (estimate)">
           <span class="popup__stat-icon">⏱</span>
           <span class="popup__stat-value" id="timeSavedValue">0 min</span>
         </span>
@@ -176,7 +196,7 @@
           <span class="popup__stat-icon">🔄</span>
           <span class="popup__stat-value" id="recoveriesValue">0</span>
         </span>
-        <span class="popup__stat-item" id="statFillCount" title="Applications filled">
+        <span class="popup__stat-item" id="statFillCount" title="Pages filled">
           <span class="popup__stat-icon">📝</span>
           <span class="popup__stat-value" id="fillCountValue">0</span>
         </span>

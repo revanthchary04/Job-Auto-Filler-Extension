@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Associate Analyst — EY (mock Yello application)</title>
+  <link rel="stylesheet" href="/vendor/select2.css">
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; max-width: 760px; }
+    .control-group { margin: 12px 0; }
+    .control-label { display: block; font-weight: 600; }
+    input[type="text"], input[type="tel"], select { width: 360px; padding: 4px; }
+    .iti { display: flex; align-items: center; gap: 6px; position: relative; }
+    .iti__selected-flag { cursor: pointer; border: 1px solid #ccc; padding: 2px 6px; }
+    .iti__country-list { position: absolute; top: 28px; left: 0; background: #fff; border: 1px solid #ccc; list-style: none; margin: 0; padding: 0; z-index: 5; }
+    .iti__country-list.iti__hide { display: none; }
+    .iti__country { padding: 2px 8px; cursor: pointer; }
+    .select2-container { min-width: 360px; }
+  </style>
+</head>
+<body>
+  <!-- Markup modelled on Yello (Rails/Bootstrap): labels are not linked to inputs; long lists are
+       Select2 4 boxes that fetch their options from the server as you type -->
+  <form id="application" onsubmit="event.preventDefault()">
+    <h2>Associate Analyst</h2>
+    <p>Please provide your information below.</p>
+
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Preferred First Name</label>
+      <div class="controls"><input type="text" name="answers[1000]"></div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Legal First Name</label>
+      <div class="controls"><input type="text" name="answers[1001]"></div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Legal Last Name</label>
+      <div class="controls"><input type="text" name="answers[1002]"></div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Primary Email Address</label>
+      <div class="controls"><input type="text" name="candidate[email_address]" value="ada@example.com" readonly></div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Mobile Phone</label>
+      <div class="controls">
+        <div class="iti iti--separate-dial-code">
+          <div class="iti__flag-container">
+            <div class="iti__selected-flag" role="combobox" aria-expanded="false" tabindex="0" title="United Kingdom: +44">
+              <span class="iti__flag iti__gb"></span><span class="iti__selected-dial-code">+44</span>
+            </div>
+            <ul class="iti__country-list iti__hide" role="listbox">
+              <li class="iti__country" role="option" data-dial-code="1" data-country-code="ca"><span class="iti__country-name">Canada</span> <span class="iti__dial-code">+1</span></li>
+              <li class="iti__country" role="option" data-dial-code="91" data-country-code="in"><span class="iti__country-name">India (भारत)</span> <span class="iti__dial-code">+91</span></li>
+              <li class="iti__country" role="option" data-dial-code="44" data-country-code="gb"><span class="iti__country-name">United Kingdom</span> <span class="iti__dial-code">+44</span></li>
+              <li class="iti__country" role="option" data-dial-code="1" data-country-code="us"><span class="iti__country-name">United States</span> <span class="iti__dial-code">+1</span></li>
+            </ul>
+          </div>
+          <input type="tel" name="answers[1004]" autocomplete="off">
+        </div>
+      </div>
+    </div>
+
+    <p>Many positions are contingent on your progress towards your degree. Please share your full degree and graduation plans below.</p>
+
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> University/School (current/most recent)</label>
+      <div class="controls">
+        <select name="answers[2001]" id="school" data-list="schools"><option value="">Select a school</option></select>
+      </div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Primary Degree (current/most recent)</label>
+      <div class="controls">
+        <select name="answers[2002]">
+          <option value="">Select…</option>
+          <option value="b">Bachelors</option>
+          <option value="m">Masters</option>
+          <option value="p">PhD</option>
+        </select>
+      </div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Degree Subject/Major (current/most recent)</label>
+      <div class="controls">
+        <select name="answers[2003]" id="major" data-list="majors"><option value="">Select a major</option></select>
+      </div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Month of Graduation</label>
+      <div class="controls">
+        <select name="answers[2005]" class="s2-static">
+          <option value="">Select…</option>
+          <option>January</option><option>February</option><option>March</option><option>April</option>
+          <option>May</option><option>June</option><option>July</option><option>August</option>
+          <option>September</option><option>October</option><option>November</option><option>December</option>
+        </select>
+      </div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Year of Graduation</label>
+      <div class="controls">
+        <select name="answers[2006]" class="s2-static">
+          <option value="">Select…</option>
+          <option>2016</option><option>2017</option><option>2018</option><option>2019</option><option>2020</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Office Location (City) First Preference</label>
+      <div class="controls">
+        <select name="answers[3001]" class="s2-static">
+          <option value="">Select…</option>
+          <option>Bengaluru</option><option>Chennai</option><option>Hyderabad</option><option>Kochi</option><option>Pune</option>
+        </select>
+      </div>
+    </div>
+    <div class="control-group">
+      <label class="control-label">Office Location (City) Second Preference</label>
+      <div class="controls">
+        <select name="answers[3002]" class="s2-static">
+          <option value="">Select…</option>
+          <option>Bengaluru</option><option>Chennai</option><option>Hyderabad</option><option>Kochi</option><option>Pune</option>
+        </select>
+      </div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Country/Region of Residence</label>
+      <div class="controls">
+        <select name="answers[3003]" id="country" data-list="countries"><option value="">Select a country</option></select>
+      </div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Current City</label>
+      <div class="controls">
+        <!-- Fetches from a list that doesn't have the profile's city: shows the "Copy details" path -->
+        <select name="answers[3004]" id="city" data-list="cities"><option value="">Select a city</option></select>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Do you have a disability, either visible or invisible?</label>
+      <div class="controls"><select name="answers[4001]"><option value="">Select…</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+    </div>
+    <div class="control-group">
+      <label class="control-label"><abbr title="required">*</abbr> Are you willing to work in shifts if required?</label>
+      <div class="controls"><select name="answers[4002]"><option value="">Select…</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+    </div>
+    <button type="submit">Submit Application</button>
+  </form>
+
+  <script src="/vendor/jquery.js"></script>
+  <script src="/vendor/select2.js"></script>
+  <script>
+    // Minimal stand-in for intl-tel-input
+    const flag = document.querySelector('.iti__selected-flag');
+    const list = document.querySelector('.iti__country-list');
+    flag.addEventListener('click', () => list.classList.toggle('iti__hide'));
+    list.querySelectorAll('.iti__country').forEach(li => li.addEventListener('click', () => {
+      flag.querySelector('.iti__selected-dial-code').textContent = `+${li.dataset.dialCode}`;
+      flag.querySelector('.iti__flag').className = `iti__flag iti__${li.dataset.countryCode}`;
+      flag.title = `${li.querySelector('.iti__country-name').textContent}: +${li.dataset.dialCode}`;
+      window.__selectedCountry = li.dataset.countryCode;
+      list.classList.add('iti__hide');
+    }));
+
+    // Real Select2 4: long lists ask the server as you type, short ones are searchable boxes
+    $('select[data-list]').each(function () {
+      $(this).select2({
+        placeholder: this.options[0].textContent,
+        minimumInputLength: 2,
+        ajax: {
+          url: `/api/options?list=${this.dataset.list}`,
+          dataType: 'json',
+          delay: 150,
+          data: (params) => ({ q: params.term })
+        }
+      });
+    });
+    $('select.s2-static').select2({ placeholder: 'Select…' });
+  </script>
+</body>
+</html>

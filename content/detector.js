@@ -7,7 +7,7 @@
  * @author CharyWorld
  */
 
-const OriginFillDetector = (() => {
+var OriginFillDetector = (() => {
   'use strict';
 
   /** @type {{ type: string, confidence: string, pageName: string, url: string } | null} */
@@ -23,35 +23,29 @@ const OriginFillDetector = (() => {
   function detectFromURL(url) {
     if (!url) return null;
 
+    let hostname = '';
     try {
-      const hostname = window.location.hostname || new URL(url).hostname;
-      if (
-        hostname.endsWith('myworkdayjobs.com') ||
-        hostname.endsWith('myworkday.com') ||
-        hostname.includes('workday')
-      ) {
-        return { type: OriginFillPortals.WORKDAY, confidence: OriginFillConfidence.MEDIUM };
-      }
-      if (hostname.endsWith('greenhouse.io') || hostname.includes('greenhouse')) {
-        return { type: OriginFillPortals.GREENHOUSE, confidence: OriginFillConfidence.MEDIUM };
-      }
-      if (hostname.endsWith('lever.co') || hostname.includes('lever')) {
-        return { type: OriginFillPortals.LEVER, confidence: OriginFillConfidence.MEDIUM };
-      }
-      if (hostname.endsWith('icims.com') || hostname.includes('icims')) {
-        return { type: OriginFillPortals.ICIMS, confidence: OriginFillConfidence.MEDIUM };
-      }
-      if (hostname.endsWith('taleo.net') || hostname.includes('taleo')) {
-        return { type: OriginFillPortals.TALEO, confidence: OriginFillConfidence.MEDIUM };
-      }
+      hostname = new URL(url).hostname.toLowerCase();
     } catch (e) {
-      // Fall through to regex patterns
+      return null;
     }
 
-    for (const { type, pattern } of OriginFillPortalPatterns) {
-      if (pattern.test(url)) {
-        return { type, confidence: OriginFillConfidence.MEDIUM };
-      }
+    const isHost = (domain) => hostname === domain || hostname.endsWith(`.${domain}`);
+
+    if (isHost('myworkdayjobs.com') || isHost('myworkday.com') || isHost('myworkdaysite.com')) {
+      return { type: OriginFillPortals.WORKDAY, confidence: OriginFillConfidence.MEDIUM };
+    }
+    if (isHost('greenhouse.io')) {
+      return { type: OriginFillPortals.GREENHOUSE, confidence: OriginFillConfidence.MEDIUM };
+    }
+    if (isHost('lever.co')) {
+      return { type: OriginFillPortals.LEVER, confidence: OriginFillConfidence.MEDIUM };
+    }
+    if (isHost('icims.com')) {
+      return { type: OriginFillPortals.ICIMS, confidence: OriginFillConfidence.MEDIUM };
+    }
+    if (isHost('taleo.net')) {
+      return { type: OriginFillPortals.TALEO, confidence: OriginFillConfidence.MEDIUM };
     }
 
     return null;
@@ -88,79 +82,89 @@ const OriginFillDetector = (() => {
    * Workday uses `data-automation-id` attributes extensively.
    */
   function confirmWorkday() {
-    // Look for Workday's signature attributes
-    const automationElements = document.querySelectorAll('[data-automation-id]');
-    const hasAutomationIds = automationElements.length > 0;
-
-    // Workday-specific class patterns
-    const hasWorkdayClasses = document.querySelector(
-      '.css-1jq6fqx, .WJLK, [data-automation-id="applicationForm"], [data-automation-id="jobPostingPage"]'
+    // Workday uses `data-automation-id` attributes on nearly every element
+    const hasAutomationIds = document.querySelector('[data-automation-id]') !== null;
+    const hasApplyFlow = document.querySelector(
+      '[data-automation-id="applyFlowPage"], [data-automation-id="applicationForm"], [data-automation-id="jobPostingPage"], [data-automation-id="progressBar"]'
     ) !== null;
 
-    // Detect which page of the application form we're on
-    let pageName = detectWorkdayPage();
+    const { pageName } = getWorkdayStep();
 
-    const hostname = window.location.hostname || '';
-    const isWorkdayDomain = hostname.endsWith('myworkdayjobs.com') || hostname.endsWith('myworkday.com') || hostname.includes('workday');
-
-    const confirmed = hasAutomationIds || hasWorkdayClasses || isWorkdayDomain;
     return {
-      confirmed,
+      confirmed: hasAutomationIds || hasApplyFlow,
       pageName,
-      confidence: (hasAutomationIds || hasWorkdayClasses)
-        ? OriginFillConfidence.HIGH
-        : (isWorkdayDomain ? OriginFillConfidence.MEDIUM : OriginFillConfidence.NONE)
+      confidence: (hasAutomationIds || hasApplyFlow) ? OriginFillConfidence.HIGH : OriginFillConfidence.MEDIUM
     };
   }
 
   /**
-   * Detect which page of a Workday multi-step form is active.
+   * Read the current step of a Workday application from its progress bar.
+   * Workday renders: <li data-automation-id="progressBarActiveStep">current step 2 of 6 My Information</li>
+   *
+   * @returns {{ pageName: string, pageNumber: number, totalPages: number }}
+   */
+  function getWorkdayStep() {
+    const active = document.querySelector('[data-automation-id="progressBarActiveStep"]');
+    if (active) {
+      const text = (active.textContent || '').replace(/\s+/g, ' ').trim();
+      const match = text.match(/step\s+(\d+)\s+of\s+(\d+)\s*(.*)$/i);
+      if (match) {
+        return {
+          pageName: match[3].trim() || `Step ${match[1]}`,
+          pageNumber: parseInt(match[1], 10),
+          totalPages: parseInt(match[2], 10)
+        };
+      }
+      const steps = document.querySelectorAll('[data-automation-id="progressBar"] li');
+      return {
+        pageName: text.replace(/^current\s+step\s*/i, '') || 'Application Form',
+        pageNumber: Array.from(steps).indexOf(active) + 1 || 1,
+        totalPages: steps.length || 1
+      };
+    }
+
+    return { pageName: detectWorkdayPage(), pageNumber: 1, totalPages: 1 };
+  }
+
+  /**
+   * Fallback page name for Workday pages without a progress bar (older tenants).
    * @returns {string}
    */
   function detectWorkdayPage() {
-    // Check URL hash for step indicators
-    const hash = window.location.hash;
-    const stepMatch = hash.match(/step[=:]?(\d+)/i);
-    if (stepMatch) {
-      const stepNum = parseInt(stepMatch[1], 10);
-      const stepNames = ['My Information', 'My Experience', 'Application Questions', 'Review', 'Submit'];
-      return stepNames[stepNum - 1] || `Step ${stepNum}`;
-    }
-
-    // Check for section headers in DOM
     const sectionHeaders = [
-      { selector: '[data-automation-id="legalNameSection"]', name: 'Personal Information' },
-      { selector: '[data-automation-id="educationSection"]', name: 'Education' },
-      { selector: '[data-automation-id="workExperienceSection"]', name: 'Work Experience' },
-      { selector: '[data-automation-id="resumeSection"]', name: 'Resume' },
-      { selector: '[data-automation-id="questionSection"]', name: 'Application Questions' },
-      { selector: '[data-automation-id="reviewSection"]', name: 'Review & Submit' }
+      { selector: '[data-automation-id="contactInformationPage"], [data-automation-id="legalNameSection"]', name: 'My Information' },
+      { selector: '[data-automation-id="myExperiencePage"], [data-automation-id="workExperienceSection"]', name: 'My Experience' },
+      { selector: '[data-automation-id="primaryQuestionnairePage"], [data-automation-id="questionSection"]', name: 'Application Questions' },
+      { selector: '[data-automation-id="voluntaryDisclosuresPage"]', name: 'Voluntary Disclosures' },
+      { selector: '[data-automation-id="selfIdentificationPage"]', name: 'Self Identify' },
+      { selector: '[data-automation-id="reviewJobApplicationPage"], [data-automation-id="reviewSection"]', name: 'Review' }
     ];
 
-    const visibleSections = [];
     for (const { selector, name } of sectionHeaders) {
       const el = document.querySelector(selector);
-      if (el && isVisible(el)) {
-        visibleSections.push(name);
-      }
-    }
-
-    if (visibleSections.length > 0) {
-      return visibleSections.join(', ');
+      if (el && isVisible(el)) return name;
     }
 
     // Fallback: check h2/h3 text content
     const headings = document.querySelectorAll('h2, h3');
     for (const h of headings) {
       const text = h.textContent.trim().toLowerCase();
-      if (text.includes('my information') || text.includes('personal')) return 'Personal Information';
-      if (text.includes('experience')) return 'Work Experience';
-      if (text.includes('education')) return 'Education';
+      if (text.includes('my information') || text.includes('personal')) return 'My Information';
+      if (text.includes('experience')) return 'My Experience';
       if (text.includes('question')) return 'Application Questions';
-      if (text.includes('review') || text.includes('submit')) return 'Review & Submit';
+      if (text.includes('review')) return 'Review';
     }
 
     return 'Application Form';
+  }
+
+  /**
+   * Whether the Workday page is a step of an application (as opposed to a job listing).
+   * @returns {boolean}
+   */
+  function isWorkdayApplication() {
+    return document.querySelector('[data-automation-id="applyFlowPage"], [data-automation-id="progressBar"]') !== null ||
+      /\/apply(\/|$)/i.test(window.location.pathname);
   }
 
   /**
@@ -226,63 +230,31 @@ const OriginFillDetector = (() => {
 
   /**
    * Attempt generic detection on unknown sites.
-   * Looks for forms with job-related input fields.
+   * Counts visible fields that look like job-application fields (with or without a <form>).
    *
    * @returns {{ type: string, confidence: string, pageName: string }}
    */
   function detectGeneric() {
-    const forms = document.querySelectorAll('form');
-    if (forms.length === 0) {
-      return {
-        type: OriginFillPortals.NONE,
-        confidence: OriginFillConfidence.NONE,
-        pageName: ''
-      };
-    }
+    const none = { type: OriginFillPortals.NONE, confidence: OriginFillConfidence.NONE, pageName: '' };
 
-    // Job-related keywords in labels, placeholders, names
-    const jobKeywords = [
-      'first name', 'last name', 'email', 'phone', 'resume', 'cv',
-      'cover letter', 'linkedin', 'experience', 'education', 'university',
-      'college', 'degree', 'company', 'job title', 'position', 'salary',
-      'work authorization', 'visa', 'sponsor', 'start date'
-    ];
+    const inputs = Array.from(document.querySelectorAll(
+      'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="search"]), select, textarea'
+    )).filter(isVisible);
+    if (inputs.length === 0) return none;
 
+    // Job-application signals: the field types we know how to fill, plus résumé uploads
     let matchCount = 0;
-    let totalFields = 0;
-
-    forms.forEach(form => {
-      const inputs = form.querySelectorAll('input, select, textarea');
-      inputs.forEach(input => {
-        totalFields++;
-
-        const label = getInputLabel(input).toLowerCase();
-        const placeholder = (input.placeholder || '').toLowerCase();
-        const name = (input.name || '').toLowerCase();
-        const id = (input.id || '').toLowerCase();
-
-        const combined = `${label} ${placeholder} ${name} ${id}`;
-
-        for (const keyword of jobKeywords) {
-          if (combined.includes(keyword)) {
-            matchCount++;
-            break;
-          }
-        }
-      });
+    inputs.forEach(input => {
+      if (input.type === 'file') {
+        if (/\b(resume|résumé|cv)\b/i.test(`${getInputLabel(input)} ${input.name} ${input.id}`)) matchCount++;
+        return;
+      }
+      if (OriginFillFieldMapper.detectFieldType(input).fieldType) matchCount++;
     });
 
-    if (totalFields === 0) {
-      return {
-        type: OriginFillPortals.NONE,
-        confidence: OriginFillConfidence.NONE,
-        pageName: ''
-      };
-    }
+    const matchRatio = matchCount / inputs.length;
 
-    const matchRatio = matchCount / totalFields;
-
-    if (matchRatio >= 0.3) {
+    if (matchCount >= 3 && matchRatio >= 0.3) {
       return {
         type: OriginFillPortals.GENERIC,
         confidence: matchRatio >= 0.5 ? OriginFillConfidence.MEDIUM : OriginFillConfidence.LOW,
@@ -290,11 +262,7 @@ const OriginFillDetector = (() => {
       };
     }
 
-    return {
-      type: OriginFillPortals.NONE,
-      confidence: OriginFillConfidence.NONE,
-      pageName: ''
-    };
+    return none;
   }
 
   // ─── Utility ───────────────────────────────────────────────────
@@ -305,41 +273,91 @@ const OriginFillDetector = (() => {
    * @returns {string}
    */
   function getInputLabel(input) {
+    const clean = (text) => (text || '')
+      .replace(/\*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/[\s:]+$/, '')
+      .trim();
+
     // 1. Explicit <label for="...">
     if (input.id) {
       const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
-      if (label) return label.textContent.trim();
+      if (label && clean(label.textContent)) return clean(label.textContent);
     }
 
-    // 2. Parent <label>
+    // 2. aria-labelledby (may reference several elements)
+    const ariaLabelledBy = input.getAttribute('aria-labelledby');
+    if (ariaLabelledBy) {
+      const text = ariaLabelledBy.split(/\s+/)
+        .map(id => document.getElementById(id))
+        .filter(el => el && el !== input)
+        .map(el => el.textContent)
+        .join(' ');
+      if (clean(text)) return clean(text);
+    }
+
+    // 3. Parent <label>
     const parentLabel = input.closest('label');
     if (parentLabel) {
       // Clone and remove the input to get just the label text
       const clone = parentLabel.cloneNode(true);
-      const childInputs = clone.querySelectorAll('input, select, textarea');
-      childInputs.forEach(el => el.remove());
-      return clone.textContent.trim();
+      clone.querySelectorAll('input, select, textarea').forEach(el => el.remove());
+      if (clean(clone.textContent)) return clean(clone.textContent);
     }
 
-    // 3. aria-label
+    // 4. aria-label
     const ariaLabel = input.getAttribute('aria-label');
-    if (ariaLabel) return ariaLabel.trim();
-
-    // 4. aria-labelledby
-    const ariaLabelledBy = input.getAttribute('aria-labelledby');
-    if (ariaLabelledBy) {
-      const labelEl = document.getElementById(ariaLabelledBy);
-      if (labelEl) return labelEl.textContent.trim();
-    }
+    if (ariaLabel) return clean(ariaLabel);
 
     // 5. Previous sibling text
     const prevSibling = input.previousElementSibling;
     if (prevSibling && (prevSibling.tagName === 'LABEL' || prevSibling.tagName === 'SPAN')) {
-      return prevSibling.textContent.trim();
+      return clean(prevSibling.textContent);
     }
 
-    // 6. Placeholder
-    return input.placeholder || '';
+    // 6. Label of the surrounding field wrapper (Workday formField-*, generic .form-group)
+    const wrapper = input.closest('[data-automation-id^="formField-"], .form-group, .field, .application-question');
+    if (wrapper) {
+      const label = wrapper.querySelector('label, legend');
+      if (label && !label.contains(input) && clean(label.textContent)) return clean(label.textContent);
+    }
+
+    // 7. Text in the smallest container that holds only this input:
+    //    <div class="control-group"><label>Legal First Name</label><div><input></div></div>
+    const nearby = nearbyText(input, clean);
+    if (nearby) return nearby;
+
+    // 8. Placeholder
+    return clean(input.placeholder || '');
+  }
+
+  const FORM_CONTROLS = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]):not([type="image"]), select, textarea, [contenteditable="true"]';
+
+  /** Text that can't be a label: dial codes, separators, required markers. */
+  const NOT_A_LABEL = /^[\s\d+()\-–—.,:;*#/\\|]*$/;
+
+  /**
+   * Many forms (Yello, Rails/Bootstrap, tables) put the label next to the input without
+   * linking them. Walk up while the container holds no other field and use its text.
+   */
+  function nearbyText(input, clean) {
+    let node = input.parentElement;
+    for (let depth = 0; node && node !== document.body && depth < 5; depth++) {
+      const others = Array.from(node.querySelectorAll(FORM_CONTROLS)).filter(c =>
+        c !== input && !(input.type === 'radio' && c.type === 'radio' && c.name === input.name));
+      if (others.length > 0) break;
+
+      const clone = node.cloneNode(true);
+      clone.querySelectorAll(
+        'input, select, textarea, button, option, script, style, [aria-hidden="true"], ' +
+        '.iti__flag-container, .flag-container, .select2-container, .chosen-container, .selectize-control'
+      ).forEach(el => el.remove());
+      const text = clean(clone.textContent);
+      if (text && !NOT_A_LABEL.test(text)) return text.slice(0, 200);
+
+      node = node.parentElement;
+    }
+    return '';
   }
 
   /**
@@ -348,15 +366,7 @@ const OriginFillDetector = (() => {
    * @returns {boolean}
    */
   function isVisible(el) {
-    if (!el) return false;
-
-    const style = window.getComputedStyle(el);
-    return (
-      style.display !== 'none' &&
-      style.visibility !== 'hidden' &&
-      style.opacity !== '0' &&
-      el.offsetParent !== null
-    );
+    return OriginFillDom.isVisible(el);
   }
 
   // ─── Master Detection Function ────────────────────────────────
@@ -381,8 +391,15 @@ const OriginFillDetector = (() => {
           ? OriginFillConfidence.HIGH
           : urlResult.confidence,
         pageName: domResult.pageName || 'Application Form',
+        pageNumber: 1,
+        totalPages: 1,
         url
       };
+
+      if (urlResult.type === OriginFillPortals.WORKDAY) {
+        Object.assign(detection, getWorkdayStep());
+        detection.isApplication = isWorkdayApplication();
+      }
 
       _lastDetection = detection;
       OriginFillLogger.info(
@@ -399,6 +416,8 @@ const OriginFillDetector = (() => {
       type: genericResult.type,
       confidence: genericResult.confidence,
       pageName: genericResult.pageName,
+      pageNumber: 1,
+      totalPages: 1,
       url
     };
 
@@ -452,6 +471,8 @@ const OriginFillDetector = (() => {
     detectGeneric,
     detectFromURL,
     confirmFromDOM,
-    detectWorkdayPage
+    detectWorkdayPage,
+    getWorkdayStep,
+    isWorkdayApplication
   });
 })();

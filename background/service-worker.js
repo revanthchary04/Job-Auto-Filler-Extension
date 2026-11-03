@@ -1,11 +1,16 @@
 /**
  * OriginFill — Background Service Worker
- * Handles tab monitoring, message routing, notifications, and extension lifecycle.
- * Runs as a Manifest V3 service worker (no persistent background page).
+ * Handles script injection, résumé retrieval, badges, notifications, stats and lifecycle.
+ * Runs as a Manifest V3 service worker: it can be stopped at any time, so nothing important
+ * lives in memory — per-tab state goes to chrome.storage.session.
  *
  * @license AGPL-3.0
  * @author CharyWorld
  */
+
+// Profiles are encrypted; only extension contexts (this worker, popup, settings) hold the key.
+// Content scripts ask for the decrypted active profile with GET_PROFILE.
+importScripts('../utils/constants.js', '../utils/logger.js', '../storage/encryption.js', '../storage/store.js');
 
 // ─── Constants (duplicated since SW can't access content script globals) ──
 const SW_StorageKeys = Object.freeze({
@@ -18,26 +23,25 @@ const SW_StorageKeys = Object.freeze({
 });
 
 const SW_Messages = Object.freeze({
-  GET_PORTAL_INFO: 'GET_PORTAL_INFO',
   PORTAL_DETECTED: 'PORTAL_DETECTED',
   DETECT_ON_DEMAND: 'DETECT_ON_DEMAND',
+  INJECT_RUNTIME: 'INJECT_RUNTIME',
   FILL_ALL: 'FILL_ALL',
   FILL_SECTION: 'FILL_SECTION',
-  FILL_PROGRESS: 'FILL_PROGRESS',
   FILL_COMPLETE: 'FILL_COMPLETE',
   FILL_ERROR: 'FILL_ERROR',
-  SESSION_TIMEOUT: 'SESSION_TIMEOUT',
-  SESSION_SNAPSHOT_SAVED: 'SESSION_SNAPSHOT_SAVED',
-  SESSION_RESTORE: 'SESSION_RESTORE',
-  SESSION_RESTORED: 'SESSION_RESTORED',
-  PAGE_CHANGED: 'PAGE_CHANGED',
-  PROFILE_UPDATED: 'PROFILE_UPDATED',
-  SETTINGS_UPDATED: 'SETTINGS_UPDATED',
-  STATS_UPDATED: 'STATS_UPDATED',
-  PING: 'PING',
-  PONG: 'PONG',
+  GET_RESUME: 'GET_RESUME',
+  GET_PROFILE: 'GET_PROFILE',
+  SAVE_FAQ_ANSWER: 'SAVE_FAQ_ANSWER',
   GET_STATE: 'GET_STATE',
-  SHOW_NOTIFICATION: 'SHOW_NOTIFICATION'
+  SESSION_TIMEOUT: 'SESSION_TIMEOUT',
+  SESSION_RESTORE: 'SESSION_RESTORE',
+  STATS_UPDATED: 'STATS_UPDATED',
+  SHOW_NOTIFICATION: 'SHOW_NOTIFICATION',
+  OPEN_SETTINGS: 'OPEN_SETTINGS',
+  GET_LAST_REPORT: 'GET_LAST_REPORT',
+  PING: 'PING',
+  PONG: 'PONG'
 });
 
 const SW_Portals = Object.freeze({
@@ -54,10 +58,13 @@ const SW_DefaultSettings = Object.freeze({
   activeProfileId: '',
   autoDetect: true,
   autoFillOnDetect: false,
+  showFloatingButton: true,
+  overwriteExisting: true,
   showNotifications: true,
   recoveryEnabled: true,
-  fillDelay: 300,
+  fillDelay: 150,
   theme: 'system',
+  debugLogging: false,
   useEncryption: true,
   usePassphrase: false
 });
@@ -72,16 +79,8 @@ const SW_DefaultStats = Object.freeze({
   lastFillDate: ''
 });
 
-// ─── State ───────────────────────────────────────────────────────
-
-/** @type {Map<number, Object>} Track active job form tabs: tabId → { portalType, url, detection } */
-const activeTabs = new Map();
-
-/** @type {Object|null} Last fill report */
-let lastFillReport = null;
-
-/** @type {Object|null} Last page info from observer */
-let lastPageInfo = null;
+/** Content scripts in load order — the same list the manifest injects. */
+const CONTENT_SCRIPTS = chrome.runtime.getManifest().content_scripts[0].js;
 
 // ─── Extension Lifecycle ─────────────────────────────────────────
 
@@ -111,268 +110,280 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       });
     }
 
-    console.log('[OriginFill] First install complete — ready for onboarding');
+    // Onboarding: the profile is the only setup step
+    openSettings('personal', { welcome: true });
   }
 
   if (details.reason === 'update') {
     console.log(`[OriginFill] Updated from v${details.previousVersion}`);
   }
-});
 
-/**
- * Handle extension startup (browser restart).
- */
-chrome.runtime.onStartup.addListener(() => {
-  console.log('[OriginFill] Extension started');
-  // Clear active tabs state (browser restarted)
-  activeTabs.clear();
+  // Tabs opened before this install/update have no (or an orphaned) content script
+  reinjectIntoOpenTabs();
 });
 
 // ─── Message Router ──────────────────────────────────────────────
 
 /**
  * Handle messages from content scripts and popup.
+ * Returns true only when sendResponse will be called asynchronously.
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const { type, data } = message;
+  const { type, data } = message || {};
   const tabId = sender.tab?.id;
 
   switch (type) {
     // ─── Portal Detection ────────────────
     case SW_Messages.PORTAL_DETECTED:
-      if (tabId && data) {
-        activeTabs.set(tabId, {
-          portalType: data.type,
-          url: data.url,
-          confidence: data.confidence,
-          pageName: data.pageName,
-          detectedAt: Date.now()
-        });
-        updateBadge(tabId, data.type);
-      }
-      break;
+      if (tabId && data) updateBadge(tabId, data.type);
+      return false;
 
-    case SW_Messages.GET_PORTAL_INFO:
-      // Popup requesting current tab's portal info
-      getActiveTabInfo().then(info => {
-        sendResponse(info);
-      });
-      return true; // Async response
-
+    case SW_Messages.INJECT_RUNTIME:
     case SW_Messages.DETECT_ON_DEMAND:
-      // Run generic detection on the active tab
-      getActiveTabId().then(activeTabId => {
-        if (activeTabId) {
-          executeOnDemandDetection(activeTabId).then(result => {
-            if (result && result.type !== 'none') {
-              // Update activeTabs tracking for the newly detected portal
-              activeTabs.set(activeTabId, {
-                portalType: result.type,
-                url: result.url || '',
-                confidence: result.confidence,
-                pageName: result.pageName || '',
-                detectedAt: Date.now()
-              });
-              updateBadge(activeTabId, result.type);
-            }
-            sendResponse(result);
-          }).catch(err => {
-            sendResponse({ type: 'none', confidence: 'none', error: err.message });
-          });
-        } else {
-          sendResponse({ type: 'none', confidence: 'none', error: 'No active tab' });
-        }
-      });
-      return true; // Async response
+      resolveTabId(data?.tabId ?? message.tabId)
+        .then(id => id ? ensureRuntime(id) : { ok: false, error: 'No active tab' })
+        .then(sendResponse, err => sendResponse({ ok: false, error: err.message }));
+      return true;
+
+    // ─── Active profile (decrypted here, never in the page) ────
+    case SW_Messages.GET_PROFILE:
+      getActiveProfileForTab()
+        .then(sendResponse, err => sendResponse({ profile: null, error: err.message }));
+      return true;
+
+    // ─── A common question answered in the page's report ────
+    case SW_Messages.SAVE_FAQ_ANSWER:
+      saveFaqAnswer(data)
+        .then(sendResponse, err => sendResponse({ ok: false, error: err.message }));
+      return true;
+
+    // ─── Résumé (extension IndexedDB) ────
+    case SW_Messages.GET_RESUME:
+      getResume(data?.profileId, data?.resumeId)
+        .then(resume => sendResponse(resume ? { resume } : { resume: null, error: 'No résumé saved — add one in Settings → Resume' }))
+        .catch(err => sendResponse({ resume: null, error: err.message }));
+      return true;
 
     // ─── Fill Events ─────────────────────
-    case SW_Messages.FILL_PROGRESS:
-      lastFillReport = null; // Clear previous
-      break;
-
     case SW_Messages.FILL_COMPLETE:
-      lastFillReport = data;
-      if (tabId) {
-        const tab = activeTabs.get(tabId);
-        if (tab) {
-          tab.lastFill = data;
-        }
-      }
-      break;
-
     case SW_Messages.FILL_ERROR:
-      lastFillReport = data;
-      break;
+      if (tabId && data) saveLastReport(tabId, data);
+      return false;
 
-    // ─── Page Change ─────────────────────
-    case SW_Messages.PAGE_CHANGED:
-      lastPageInfo = data;
-      if (tabId) {
-        const tab = activeTabs.get(tabId);
-        if (tab) {
-          tab.pageName = data.pageName;
-          tab.pageNumber = data.pageNumber;
-          tab.totalPages = data.totalPages;
-        }
-      }
-      break;
+    case SW_Messages.GET_LAST_REPORT:
+      loadLastReport(data?.tabId).then(sendResponse, () => sendResponse(null));
+      return true;
+
+    // Legacy: popup asking the background to forward a fill or restore
+    case SW_Messages.FILL_ALL:
+    case SW_Messages.FILL_SECTION:
+    case SW_Messages.SESSION_RESTORE:
+      resolveTabId(tabId || data?.tabId || message.tabId)
+        .then(async id => {
+          if (!id) return { started: false, error: 'No active tab' };
+          const runtime = await ensureRuntime(id);
+          if (!runtime.ok) return { started: false, error: runtime.error };
+          return chrome.tabs.sendMessage(id, { type, data });
+        })
+        .then(sendResponse, err => sendResponse({ started: false, error: err.message }));
+      return true;
 
     // ─── Session Timeout ─────────────────
     case SW_Messages.SESSION_TIMEOUT:
-      handleSessionTimeout(data, tabId);
-      break;
-
-    case SW_Messages.SESSION_RESTORE:
-      // Forward restore request to content script after a ping validation
-      const targetTabId = tabId || data?.tabId;
-      if (!targetTabId) {
-        sendResponse({ success: false, error: 'No active tab' });
-        return true;
-      }
-      
-      (async () => {
-        try {
-          const tab = await chrome.tabs.get(targetTabId);
-          const url = tab.url || '';
-          
-          if (isRestrictedUrl(url)) {
-            sendResponse({ success: false, error: 'Cannot restore on this page.' });
-            return;
-          }
-
-          // Try to ping first
-          let isAlive = false;
-          try {
-            const pingResponse = await chrome.tabs.sendMessage(targetTabId, { type: SW_Messages.PING });
-            if (pingResponse) isAlive = true;
-          } catch (e) {
-            isAlive = false;
-          }
-
-          if (!isAlive) {
-            // Inject runtime if it's dead
-            await executeOnDemandDetection(targetTabId);
-            // Ping again
-            try {
-              const retryPing = await chrome.tabs.sendMessage(targetTabId, { type: SW_Messages.PING });
-              if (retryPing) isAlive = true;
-            } catch (e) {
-              isAlive = false;
-            }
-          }
-
-          if (!isAlive) {
-            activeTabs.delete(targetTabId);
-            updateBadge(targetTabId, null);
-            sendResponse({ success: false, error: 'Content script unavailable' });
-            return;
-          }
-
-          chrome.tabs.sendMessage(targetTabId, {
-            type: SW_Messages.SESSION_RESTORE,
-            data
-          });
-          sendResponse({ success: true });
-        } catch (err) {
-          sendResponse({ success: false, error: err.message });
-        }
-      })();
-      return true; // Async response
+      handleSessionTimeout(data);
+      return false;
 
     // ─── Stats Update ────────────────────
     case SW_Messages.STATS_UPDATED:
-      updateStats(data);
-      break;
+      updateStats(data || {});
+      return false;
 
     // ─── Notifications ───────────────────
-    case 'SHOW_NOTIFICATION':
-      showNotification(data);
-      break;
+    case SW_Messages.SHOW_NOTIFICATION:
+      showNotification(data || {});
+      return false;
 
-    // ─── State Query ─────────────────────
-    case SW_Messages.GET_STATE:
-      sendResponse({
-        activeTabs: Object.fromEntries(activeTabs),
-        lastFillReport,
-        lastPageInfo
-      });
-      return true;
+    case SW_Messages.OPEN_SETTINGS:
+      openSettings(data?.section || '');
+      return false;
 
     // ─── Ping (health check) ─────────────
     case SW_Messages.PING:
       sendResponse({ type: SW_Messages.PONG, timestamp: Date.now() });
-      return true;
-
-    // ─── Fill Command from Popup ─────────
-    case SW_Messages.FILL_ALL:
-    case SW_Messages.FILL_SECTION:
-      // Forward to the active tab's content script
-      getActiveTabId().then(activeTabId => {
-        if (activeTabId) {
-          forwardToTab(activeTabId, message);
-        }
-      });
-      break;
-
-    // ─── Settings/Profile Updates ────────
-    case SW_Messages.SETTINGS_UPDATED:
-    case SW_Messages.PROFILE_UPDATED:
-      // Broadcast to all active tabs
-      activeTabs.forEach((_, tid) => {
-        forwardToTab(tid, message);
-      });
-      break;
+      return false;
   }
 
-  return false; // Synchronous (no sendResponse needed)
+  return false;
 });
 
-// ─── Tab Monitoring ──────────────────────────────────────────────
+// ─── Script Injection ────────────────────────────────────────────
 
 /**
- * Watch for tab closures — clean up state.
+ * Helper to determine if a URL is restricted from script injection.
+ * @param {string} url
+ * @returns {boolean}
  */
-chrome.tabs.onRemoved.addListener((tabId) => {
-  activeTabs.delete(tabId);
-});
+function isRestrictedUrl(url) {
+  if (!url) return false; // Unknown without the tabs permission — let executeScript decide
+  return url.startsWith('chrome://') ||
+         url.startsWith('chrome-extension://') ||
+         url.startsWith('edge://') ||
+         url.startsWith('about:') ||
+         url.startsWith('devtools://') ||
+         url.startsWith('view-source:') ||
+         url.startsWith('https://chromewebstore.google.com') ||
+         url.startsWith('https://chrome.google.com/webstore');
+}
 
 /**
- * Watch for tab URL changes — detect navigating away from job forms.
+ * Whether the tab's content script is alive and answering.
+ * @param {number} tabId
+ * @returns {Promise<boolean>}
  */
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'loading' && activeTabs.has(tabId)) {
-    // Tab is navigating — check if leaving job form
-    const tracked = activeTabs.get(tabId);
-    const newUrl = changeInfo.url || tab.url;
+async function pingTab(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: SW_Messages.PING });
+    return !!response;
+  } catch (e) {
+    return false;
+  }
+}
 
-    if (newUrl && tracked.url) {
-      try {
-        const oldDomain = new URL(tracked.url).hostname;
-        const newDomain = new URL(newUrl).hostname;
+/**
+ * Make sure OriginFill is running in a tab, injecting it when needed (pages opened before the
+ * extension was installed/updated, or sites outside the built-in list via activeTab).
+ *
+ * @param {number} tabId
+ * @returns {Promise<{ ok: boolean, injected?: boolean, error?: string }>}
+ */
+async function ensureRuntime(tabId) {
+  if (await pingTab(tabId)) return { ok: true, injected: false };
 
-        if (oldDomain !== newDomain) {
-          // Left the portal domain — clear tracking
-          activeTabs.delete(tabId);
-          updateBadge(tabId, null);
-        }
-      } catch (e) {
-        // URL parsing failed
-      }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (isRestrictedUrl(tab.url || '')) {
+      return { ok: false, error: 'OriginFill can\'t run on this page.', reason: 'restricted_url' };
     }
+
+    // A fresh boot token lets init.js replace an orphaned copy left by an extension update
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => { window.__originfillBootToken = `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+    });
+    await chrome.scripting.executeScript({ target: { tabId }, files: CONTENT_SCRIPTS });
+  } catch (err) {
+    console.warn('[OriginFill][SW] Injection failed:', err.message);
+    return { ok: false, error: 'OriginFill can\'t access this page. Reload it and try again.', reason: 'injection_failed' };
   }
+
+  // Give init.js a moment to register its listeners
+  for (let i = 0; i < 10; i++) {
+    if (await pingTab(tabId)) return { ok: true, injected: true };
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return { ok: false, error: 'OriginFill didn\'t start on this page. Reload it and try again.', reason: 'no_response' };
+}
+
+/**
+ * Re-inject into already-open job portal tabs after install/update.
+ */
+async function reinjectIntoOpenTabs() {
+  try {
+    const patterns = chrome.runtime.getManifest().content_scripts.flatMap(entry => entry.matches);
+    const tabs = await chrome.tabs.query({ url: patterns });
+    for (const tab of tabs) {
+      if (tab.id && !tab.discarded) ensureRuntime(tab.id).catch(() => {});
+    }
+  } catch (err) {
+    console.debug('[OriginFill][SW] Re-inject skipped:', err.message);
+  }
+}
+
+async function resolveTabId(tabId) {
+  if (tabId) return tabId;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab?.id || null;
+}
+
+// ─── Profile & Résumés ───────────────────────────────────────────
+
+/**
+ * The active profile and settings, for a content script about to fill a page.
+ * @returns {Promise<{ profile: Object|null, settings: Object }>}
+ */
+async function getActiveProfileForTab() {
+  const settings = await OriginFillStore.getSettings();
+  const profiles = await OriginFillStore.getProfiles();
+  const profile = profiles.find(p => p.id === settings.activeProfileId) ||
+    profiles.find(p => p.isDefault) || profiles[0] || null;
+  return { profile, settings };
+}
+
+/**
+ * Save a common-question answer given in a page's report ("Do you have a disability?" → No)
+ * to the active profile, so every later application gets it too.
+ * @param {{ id: string, answer: string }} data
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+async function saveFaqAnswer(data) {
+  const id = String(data?.id || '');
+  const answer = String(data?.answer || '').trim().slice(0, 200);
+  if (!/^[A-Za-z0-9]{1,40}$/.test(id) || !answer) return { ok: false, error: 'Invalid answer' };
+
+  const { profile } = await getActiveProfileForTab();
+  if (!profile) return { ok: false, error: 'No profile' };
+  await OriginFillStore.replaceProfileFields(profile.id, { faq: { ...(profile.faq || {}), [id]: answer } });
+  return { ok: true };
+}
+
+/**
+ * Get the résumé to upload for a profile: the chosen default, else the first uploaded.
+ * Résumés live in the extension's IndexedDB, which job sites can't reach.
+ *
+ * @param {string} profileId
+ * @param {string} [resumeId]
+ * @returns {Promise<{ fileName: string, fileData: string, mimeType: string }|null>}
+ */
+async function getResume(profileId, resumeId) {
+  if (!profileId) return null;
+  const resumes = await OriginFillStore.getResumes(profileId);
+  if (resumes.length === 0) return null;
+
+  const sorted = resumes.sort((a, b) => String(a.uploadedAt || '').localeCompare(String(b.uploadedAt || '')));
+  const chosen = sorted.find(r => r.id === resumeId) || sorted[0];
+  return { fileName: chosen.fileName, fileData: chosen.fileData, mimeType: chosen.mimeType || '' };
+}
+
+// ─── Per-Tab Last Report ─────────────────────────────────────────
+
+async function saveLastReport(tabId, report) {
+  try {
+    await chrome.storage.session.set({ [`lastReport_${tabId}`]: report });
+  } catch (e) { /* session storage full or unavailable */ }
+}
+
+async function loadLastReport(tabId) {
+  if (!tabId) return null;
+  const key = `lastReport_${tabId}`;
+  const result = await chrome.storage.session.get(key);
+  return result[key] || null;
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.remove(`lastReport_${tabId}`).catch(() => {});
 });
 
 // ─── Badge Management ────────────────────────────────────────────
 
 /**
- * Update the extension badge for a tab.
+ * Update the extension badge for a tab. Chrome clears tab badges on navigation.
  *
  * @param {number} tabId
  * @param {string|null} portalType
  */
 function updateBadge(tabId, portalType) {
   if (!portalType || portalType === SW_Portals.NONE) {
-    chrome.action.setBadgeText({ text: '', tabId });
+    chrome.action.setBadgeText({ text: '', tabId }).catch(() => {});
     return;
   }
 
@@ -382,13 +393,13 @@ function updateBadge(tabId, portalType) {
     [SW_Portals.LEVER]:      { text: 'L', color: '#7C3AED' },
     [SW_Portals.ICIMS]:      { text: 'I', color: '#D97706' },
     [SW_Portals.TALEO]:      { text: 'T', color: '#0891B2' },
-    [SW_Portals.GENERIC]:    { text: '?', color: '#6B7280' }
+    [SW_Portals.GENERIC]:    { text: '•', color: '#6B7280' }
   };
 
   const config = badgeConfig[portalType] || badgeConfig[SW_Portals.GENERIC];
 
-  chrome.action.setBadgeText({ text: config.text, tabId });
-  chrome.action.setBadgeBackgroundColor({ color: config.color, tabId });
+  chrome.action.setBadgeText({ text: config.text, tabId }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ color: config.color, tabId }).catch(() => {});
 }
 
 // ─── Notifications ───────────────────────────────────────────────
@@ -400,35 +411,36 @@ function updateBadge(tabId, portalType) {
  */
 async function showNotification(data) {
   const settings = await getStorageValue(SW_StorageKeys.SETTINGS) || SW_DefaultSettings;
-
-  if (!settings.showNotifications) return;
+  if (settings.showNotifications === false) return;
 
   const notificationId = 'originfill_' + Date.now();
 
   try {
-    chrome.notifications.create(notificationId, {
+    await chrome.notifications.create(notificationId, {
       type: 'basic',
-      iconUrl: '/assets/icons/icon128.png', // Must be absolute path from extension root
+      iconUrl: chrome.runtime.getURL('assets/icons/logo128.png'),
       title: data.title || 'OriginFill',
       message: data.message || '',
-      priority: 2,
-      requireInteraction: true // Keep notification visible until dismissed
+      priority: 1
     });
+    if (data.url) {
+      await chrome.storage.session.set({ [`notify_${notificationId}`]: data.url });
+    }
   } catch (error) {
-    console.warn('[OriginFill] Notification failed to create (could not download image or permissions issue):', error.message);
-  }
-
-  // Handle notification click — open the application URL
-  if (data.url) {
-    chrome.notifications.onClicked.addListener(function handler(clickedId) {
-      if (clickedId === notificationId) {
-        chrome.tabs.create({ url: data.url });
-        chrome.notifications.clear(notificationId);
-        chrome.notifications.onClicked.removeListener(handler);
-      }
-    });
+    console.warn('[OriginFill] Notification failed:', error.message);
   }
 }
+
+// Registered at top level so it works after the service worker restarts
+chrome.notifications.onClicked.addListener(async (notificationId) => {
+  const key = `notify_${notificationId}`;
+  const result = await chrome.storage.session.get(key);
+  if (result[key]) {
+    chrome.tabs.create({ url: result[key] });
+    chrome.storage.session.remove(key);
+  }
+  chrome.notifications.clear(notificationId);
+});
 
 // ─── Session Timeout Handling ────────────────────────────────────
 
@@ -436,113 +448,36 @@ async function showNotification(data) {
  * Handle a session timeout event from content script.
  *
  * @param {Object} data - Timeout details
- * @param {number} tabId
  */
-async function handleSessionTimeout(data, tabId) {
-  console.log('[OriginFill] Session timeout:', data);
+async function handleSessionTimeout(data = {}) {
+  console.log('[OriginFill] Session timeout:', data.method);
 
-  // Update stats
-  const stats = await getStorageValue(SW_StorageKeys.STATS) || { ...SW_DefaultStats };
-  stats.totalRecoveries = (stats.totalRecoveries || 0) + 1;
-  await chrome.storage.local.set({ [SW_StorageKeys.STATS]: stats });
-
-  // Show notification
-  const settings = await getStorageValue(SW_StorageKeys.SETTINGS) || SW_DefaultSettings;
-
-  if (settings.showNotifications) {
-    showNotification({
-      title: '⚠️ Session Expired',
-      message: `Session expired on ${getPortalName(data.portal)}. Your form data has been saved.`,
-      url: data.url
-    });
-  }
+  showNotification({
+    title: 'Session expired — your answers are saved',
+    message: `Your ${getPortalName(data.portal)} session ended. Sign back in and open the application: OriginFill will offer to restore what you typed.`,
+    url: data.url
+  });
 }
 
-// ─── On-Demand Generic Detection ─────────────────────────────────
+// ─── Settings Page ───────────────────────────────────────────────
 
 /**
- * Helper to determine if a URL is restricted from script injection.
- * @param {string} url 
- * @returns {boolean}
+ * Open (or focus) the settings page at a section.
+ * @param {string} section
+ * @param {{ welcome?: boolean }} [options]
  */
-function isRestrictedUrl(url) {
-  if (!url) return true;
-  return url.startsWith('chrome://') || 
-         url.startsWith('chrome-extension://') || 
-         url.startsWith('edge://') || 
-         url.startsWith('about:') || 
-         url.startsWith('devtools://') || 
-         url.startsWith('view-source:') ||
-         url.startsWith('file://');
-}
-
-/**
- * Execute generic portal detection on a tab that's not in our known domains.
- * Uses chrome.scripting.executeScript for on-demand injection.
- *
- * @param {number} tabId
- * @returns {Promise<Object>} Detection result
- */
-async function executeOnDemandDetection(tabId) {
+async function openSettings(section, { welcome = false } = {}) {
+  const base = chrome.runtime.getURL('settings/settings.html');
+  const url = `${base}${welcome ? '?welcome=1' : ''}${section ? `#${section}` : ''}`;
   try {
-    const tab = await chrome.tabs.get(tabId);
-    const url = tab.url || '';
-    
-    if (isRestrictedUrl(url)) {
-      console.log(`[OriginFill][SW] Restricted URL detected: ${url}`);
-      return { type: 'none', confidence: 'none', url, reason: 'restricted_url' };
+    const [existing] = await chrome.tabs.query({ url: `${base}*` });
+    if (existing) {
+      await chrome.tabs.update(existing.id, { url, active: true });
+      await chrome.windows.update(existing.windowId, { focused: true });
+      return;
     }
-
-    // 1. Check if scripts are already injected
-    const checkInjection = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => typeof window.__originfillRuntime !== 'undefined'
-    });
-
-    const isInitialized = checkInjection[0]?.result === true;
-
-    // 2. Inject full dependency chain only if not initialized
-    if (!isInitialized) {
-      console.log(`[OriginFill][SW] Injecting runtime into tab ${tabId}`);
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: [
-          'utils/constants.js',
-          'utils/logger.js',
-          'utils/fuzzy-match.js',
-          'utils/field-mapper.js',
-          'storage/encryption.js',
-          'storage/store.js',
-          'content/portals/workday.js',
-          'content/portals/generic.js',
-          'content/detector.js',
-          'content/filler.js',
-          'content/observer.js',
-          'content/session-guard.js',
-          'content/init.js'
-        ]
-      });
-    } else {
-      console.log(`[OriginFill][SW] Runtime already initialized on tab ${tabId}`);
-    }
-
-    // Now run detection
-    const detectionResults = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        if (typeof OriginFillDetector !== 'undefined') {
-          return OriginFillDetector.detect();
-        }
-        return { type: 'none', confidence: 'none', pageName: '', url: window.location.href };
-      }
-    });
-
-    return detectionResults[0]?.result || { type: 'none', confidence: 'none' };
-
-  } catch (err) {
-    console.error('[OriginFill] On-demand detection failed:', err);
-    return { type: 'none', confidence: 'none', error: err.message };
-  }
+  } catch (e) { /* fall through to a new tab */ }
+  chrome.tabs.create({ url });
 }
 
 // ─── Helper Functions ────────────────────────────────────────────
@@ -558,97 +493,6 @@ async function getStorageValue(key) {
 }
 
 /**
- * Get the currently active tab's ID.
- * @returns {Promise<number|null>}
- */
-async function getActiveTabId() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.id || null;
-}
-
-/**
- * Get portal info for the currently active tab.
- * @returns {Promise<Object>}
- */
-async function getActiveTabInfo() {
-  const tabId = await getActiveTabId();
-  if (!tabId) return { portalType: SW_Portals.NONE };
-
-  // Check tracked tabs first
-  if (activeTabs.has(tabId)) {
-    return new Promise((resolve) => {
-      chrome.tabs.sendMessage(tabId, { type: SW_Messages.PING }, (pingResponse) => {
-        if (chrome.runtime.lastError || !pingResponse) {
-          // Stale tab — clean up and fall through to undetected state
-          activeTabs.delete(tabId);
-          updateBadge(tabId, null);
-          resolve({
-            portalType: SW_Portals.NONE,
-            tabId,
-            lastFillReport: null,
-            lastPageInfo: null
-          });
-        } else {
-          resolve({
-            ...activeTabs.get(tabId),
-            lastFillReport: lastFillReport,
-            lastPageInfo: lastPageInfo
-          });
-        }
-      });
-    });
-  }
-
-  // Not tracked — attempt on-demand detection if valid tab
-  return new Promise(async (resolve) => {
-    try {
-      const result = await executeOnDemandDetection(tabId);
-      if (result && result.type && result.type !== SW_Portals.NONE) {
-        // Now it's tracked
-        activeTabs.set(tabId, {
-          portalType: result.type,
-          url: result.url || '',
-          confidence: result.confidence,
-          pageName: result.pageName || '',
-          detectedAt: Date.now()
-        });
-        updateBadge(tabId, result.type);
-        
-        resolve({
-          ...activeTabs.get(tabId),
-          lastFillReport: null,
-          lastPageInfo: null
-        });
-        return;
-      }
-    } catch (err) {
-      // Ignore
-    }
-
-    resolve({
-      portalType: SW_Portals.NONE,
-      tabId,
-      lastFillReport: null,
-      lastPageInfo: null
-    });
-  });
-}
-
-/**
- * Forward a message to a specific tab's content script.
- * @param {number} tabId
- * @param {Object} message
- */
-function forwardToTab(tabId, message) {
-  if (!tabId) return;
-  try {
-    chrome.tabs.sendMessage(tabId, message);
-  } catch (err) {
-    console.debug('[OriginFill] Forward to tab failed:', err.message);
-  }
-}
-
-/**
  * Get display name for a portal type.
  * @param {string} type
  * @returns {string}
@@ -660,10 +504,10 @@ function getPortalName(type) {
     lever: 'Lever',
     icims: 'iCIMS',
     taleo: 'Taleo',
-    generic: 'Generic Portal',
-    none: 'Unknown'
+    generic: 'job portal',
+    none: 'job portal'
   };
-  return names[type] || 'Unknown';
+  return names[type] || 'job portal';
 }
 
 /**
@@ -671,7 +515,7 @@ function getPortalName(type) {
  * @param {Object} delta
  */
 async function updateStats(delta) {
-  const stats = await getStorageValue(SW_StorageKeys.STATS) || { ...SW_DefaultStats };
+  const stats = { ...SW_DefaultStats, ...(await getStorageValue(SW_StorageKeys.STATS) || {}) };
 
   if (delta.totalFills) stats.totalFills += delta.totalFills;
   if (delta.totalFieldsFilled) stats.totalFieldsFilled += delta.totalFieldsFilled;
@@ -681,51 +525,15 @@ async function updateStats(delta) {
     stats.portalsUsed = stats.portalsUsed || {};
     stats.portalsUsed[delta.portal] = (stats.portalsUsed[delta.portal] || 0) + 1;
   }
-  if (delta.fillSuccessRate !== undefined) {
+  if (delta.fillSuccessRate !== undefined && delta.totalFills) {
     const total = stats.totalFills || 1;
     stats.fillSuccessRate = (
       (stats.fillSuccessRate * (total - 1) + delta.fillSuccessRate) / total
     );
   }
 
-  stats.lastFillDate = new Date().toISOString();
+  if (delta.totalFills) stats.lastFillDate = new Date().toISOString();
   await chrome.storage.local.set({ [SW_StorageKeys.STATS]: stats });
 }
-
-// ─── Session Ping (Background Heartbeat) ─────────────────────────
-
-/**
- * Periodically check active tabs for session status.
- * Uses chrome.alarms since setInterval isn't reliable in service workers.
- */
-chrome.alarms.create('sessionPing', { periodInMinutes: 1 });
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name !== 'sessionPing') return;
-
-  for (const [tabId, info] of activeTabs) {
-    try {
-      // Check if tab still exists
-      const tab = await chrome.tabs.get(tabId);
-
-      if (!tab) {
-        activeTabs.delete(tabId);
-        continue;
-      }
-
-      // Ping content script
-      try {
-        await chrome.tabs.sendMessage(tabId, { type: SW_Messages.PING });
-      } catch (e) {
-        // Content script not responding — may have been unloaded
-        activeTabs.delete(tabId);
-        updateBadge(tabId, null);
-      }
-    } catch (e) {
-      // Tab doesn't exist
-      activeTabs.delete(tabId);
-    }
-  }
-});
 
 console.log('[OriginFill] Service worker initialized');

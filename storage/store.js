@@ -7,7 +7,7 @@
  * @author CharyWorld
  */
 
-const OriginFillStore = (() => {
+var OriginFillStore = (() => {
   'use strict';
 
   /** @type {IDBDatabase|null} */
@@ -236,7 +236,7 @@ const OriginFillStore = (() => {
       }
     }
 
-    return profiles || [];
+    return Array.isArray(profiles) ? profiles.map(migrateProfileSchema) : [];
   }
 
   /**
@@ -343,6 +343,25 @@ const OriginFillStore = (() => {
     await saveProfiles(profiles);
 
     OriginFillLogger.info(`Profile updated: ${profiles[index].label}`);
+    return profiles[index];
+  }
+
+  /**
+   * Replace whole top-level sections of a profile (no deep merge), so values the user
+   * cleared — e.g. a common answer set back to "Not set" — are really removed.
+   * @param {string} profileId
+   * @param {Object} fields - e.g. { faq: {...}, answers: [...] }
+   * @returns {Promise<Object>} Updated profile
+   */
+  async function replaceProfileFields(profileId, fields) {
+    const profiles = await getProfiles();
+    const index = profiles.findIndex(p => p.id === profileId);
+    if (index === -1) {
+      throw new Error(`Profile not found: ${profileId}`);
+    }
+
+    profiles[index] = { ...profiles[index], ...fields };
+    await saveProfiles(profiles);
     return profiles[index];
   }
 
@@ -729,8 +748,9 @@ const OriginFillStore = (() => {
    * @returns {Object} Migrated profile
    */
   function migrateProfileSchema(profile) {
+    if (!profile || typeof profile !== 'object') return profile;
     const currentVersion = profile.schemaVersion || 1;
-    if (currentVersion >= 2) return profile; // Already up to date
+    if (currentVersion >= 4) return profile; // Already up to date
 
     // Migration v1 → v2: Add new personal fields
     if (!profile.personal) profile.personal = {};
@@ -760,7 +780,23 @@ const OriginFillStore = (() => {
     if (!Array.isArray(profile.certifications)) profile.certifications = [];
     if (!Array.isArray(profile.languages)) profile.languages = [];
 
-    profile.schemaVersion = 2;
+    // Migration v2 → v3: Workday phone/address details, application answers
+    if (!profile.personal.phoneType) profile.personal.phoneType = 'Mobile';
+    if (!profile.personal.phoneCountryCode) profile.personal.phoneCountryCode = '';
+    if (!profile.personal.address2) profile.personal.address2 = '';
+    if (!Array.isArray(profile.personal.websites)) {
+      profile.personal.websites = Array.isArray(profile.websites) ? profile.websites : [];
+    }
+    if (!profile.application || typeof profile.application !== 'object') {
+      profile.application = { referralSource: '', previouslyEmployed: '' };
+    }
+    if (!Array.isArray(profile.answers)) profile.answers = [];
+    if (profile.resume.defaultId === undefined) profile.resume.defaultId = '';
+
+    // Migration v3 → v4: answers to built-in common questions
+    if (!profile.faq || typeof profile.faq !== 'object' || Array.isArray(profile.faq)) profile.faq = {};
+
+    profile.schemaVersion = 4;
     return profile;
   }
 
@@ -775,6 +811,7 @@ const OriginFillStore = (() => {
     getActiveProfile,
     createProfile,
     updateProfile,
+    replaceProfileFields,
     deleteProfile,
     duplicateProfile,
     setActiveProfile,
@@ -808,6 +845,7 @@ const OriginFillStore = (() => {
     clearAllData,
 
     // Utility
-    generateProfileId
+    generateProfileId,
+    migrateProfileSchema
   });
 })();

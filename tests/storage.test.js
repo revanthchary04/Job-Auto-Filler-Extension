@@ -1,50 +1,18 @@
-const fs = require('fs');
 const path = require('path');
 
-const storePath = path.join(__dirname, '../storage/store.js');
-const constantsPath = path.join(__dirname, '../utils/constants.js');
-
-// Mock indexedDB for the store
+// Mock indexedDB for the store (migration tests don't touch it)
 global.indexedDB = {
   open: jest.fn()
 };
 
-// We don't actually need to execute store methods that hit IDB or chrome.storage
-// We just want to test the `migrateProfileSchema` helper, but it's not exported.
-// In tests, we can access internal functions if we assign them to global or if we extract them.
+loadExtensionScript(path.join(__dirname, '../utils/constants.js'));
+loadExtensionScript(path.join(__dirname, '../utils/logger.js'));
+loadExtensionScript(path.join(__dirname, '../storage/store.js'));
 
-// To test `migrateProfileSchema`, we'll redefine it here exactly as it is in store.js, 
-// since it is a pure function and not exposed in the public API.
-function migrateProfileSchema(profile) {
-  const currentVersion = profile.schemaVersion || 1;
-  if (currentVersion >= 2) return profile;
-
-  if (!profile.personal) profile.personal = {};
-  if (!profile.personal.middleName) profile.personal.middleName = '';
-  if (!profile.personal.prefix) profile.personal.prefix = '';
-  if (!profile.personal.github) profile.personal.github = '';
-  if (!profile.personal.portfolio) profile.personal.portfolio = '';
-  if (!profile.personal.linkedIn) profile.personal.linkedIn = '';
-
-  if (!Array.isArray(profile.education)) {
-    profile.education = [{ institution: '', degree: '', fieldOfStudy: '', startYear: '', endYear: '', gpa: '', location: '' }];
-  }
-  if (!Array.isArray(profile.workExperience)) {
-    profile.workExperience = [{ company: '', jobTitle: '', startDate: '', endDate: '', isCurrent: false, location: '', bullets: [''] }];
-  }
-  if (!profile.resume) {
-    profile.resume = { fileName: '', fileData: '', uploadedAt: '' };
-  }
-  if (!Array.isArray(profile.skills)) profile.skills = [];
-  if (!Array.isArray(profile.certifications)) profile.certifications = [];
-  if (!Array.isArray(profile.languages)) profile.languages = [];
-
-  profile.schemaVersion = 2;
-  return profile;
-}
+const { migrateProfileSchema } = OriginFillStore;
 
 describe('Profile Storage Schema Migration', () => {
-  it('should upgrade v1 profile to v2 by adding missing fields', () => {
+  it('should upgrade a v1 profile by adding missing fields', () => {
     const v1Profile = {
       id: 'test-123',
       personal: {
@@ -56,7 +24,8 @@ describe('Profile Storage Schema Migration', () => {
 
     const migrated = migrateProfileSchema(v1Profile);
 
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(4);
+    expect(migrated.personal.firstName).toBe('John');
     expect(migrated.personal.middleName).toBe('');
     expect(migrated.personal.linkedIn).toBe('');
     expect(Array.isArray(migrated.education)).toBe(true);
@@ -65,19 +34,36 @@ describe('Profile Storage Schema Migration', () => {
     expect(migrated.resume.fileName).toBe('');
   });
 
-  it('should not alter v2 profiles', () => {
+  it('should add the v3 Workday fields to v2 profiles without touching data', () => {
     const v2Profile = {
       id: 'test-v2',
       schemaVersion: 2,
-      personal: {
-        firstName: 'Jane',
-        middleName: 'M'
-      }
+      personal: { firstName: 'Jane', middleName: 'M' },
+      websites: ['https://jane.dev'],
+      education: [],
+      workExperience: [],
+      resume: { fileName: '' }
     };
 
     const migrated = migrateProfileSchema(v2Profile);
 
-    expect(migrated).toBe(v2Profile); // Same reference
+    expect(migrated.schemaVersion).toBe(4);
     expect(migrated.personal.middleName).toBe('M');
+    expect(migrated.personal.phoneType).toBe('Mobile');
+    expect(migrated.personal.websites).toEqual(['https://jane.dev']);
+    expect(migrated.application).toEqual({ referralSource: '', previouslyEmployed: '' });
+    expect(migrated.answers).toEqual([]);
+    expect(migrated.resume.defaultId).toBe('');
+    expect(migrated.faq).toEqual({});
+  });
+
+  it('should add common-question answers to v3 profiles', () => {
+    const v3Profile = { id: 'test-v3', schemaVersion: 3, personal: { firstName: 'Ada' }, resume: {} };
+    expect(migrateProfileSchema(v3Profile).faq).toEqual({});
+  });
+
+  it('should not alter v4 profiles', () => {
+    const v4Profile = { id: 'test-v4', schemaVersion: 4, personal: { firstName: 'Ada' }, faq: { disability: 'No' } };
+    expect(migrateProfileSchema(v4Profile)).toBe(v4Profile);
   });
 });

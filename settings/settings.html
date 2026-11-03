@@ -12,7 +12,7 @@
     <!-- ─── Sidebar ──────────────────────────────────────── -->
     <nav class="settings__sidebar" id="sidebar">
       <div class="settings__sidebar-header">
-        <img src="../assets/icons/icon32.png" alt="OriginFill" class="settings__logo" width="28" height="28">
+        <img src="../assets/icons/logo128.png" alt="OriginFill" class="settings__logo" width="28" height="28">
         <div>
           <h1 class="settings__brand">OriginFill</h1>
           <span class="settings__version" id="versionText">v1.0.0</span>
@@ -38,6 +38,9 @@
         <li><a class="settings__nav-item" href="#skills" data-section="skills">
           <span class="settings__nav-icon">🔧</span> Skills & Extras
         </a></li>
+        <li><a class="settings__nav-item" href="#answers" data-section="answers">
+          <span class="settings__nav-icon">💬</span> Application Answers
+        </a></li>
         <li class="settings__nav-divider"></li>
         <li><a class="settings__nav-item" href="#extension" data-section="extension">
           <span class="settings__nav-icon">⚙️</span> Extension Settings
@@ -53,6 +56,24 @@
 
     <!-- ─── Main Content ─────────────────────────────────── -->
     <main class="settings__main" id="main">
+
+      <div class="settings__info-box settings__welcome" id="welcomeBanner" hidden>
+        <span class="settings__info-icon">👋</span>
+        <div>
+          <strong>Welcome to OriginFill — let's set you up (about 5 minutes)</strong>
+          <p>Fill in <b>Personal Info</b>, add your <b>Work Experience</b> and <b>Education</b>, and upload your <b>Resume</b>. Click Save in each section.
+          Then open any Workday application and press the <b>⚡ Autofill</b> button at the bottom-right of the page — once per step.</p>
+        </div>
+      </div>
+
+      <div class="settings__info-box settings__welcome settings__update" id="updateBanner" role="alert" hidden>
+        <span class="settings__info-icon">⟳</span>
+        <div>
+          <strong>Reload OriginFill to use the update</strong>
+          <p id="updateMeta"></p>
+          <button class="settings__btn settings__btn--primary" id="reloadExtensionBtn" type="button">Reload OriginFill</button>
+        </div>
+      </div>
 
       <!-- ─── SECTION: Profiles ──────────────────────── -->
       <section class="settings__section" id="section-profiles">
@@ -99,13 +120,34 @@
             </div>
             <div class="settings__field">
               <label class="settings__label" for="personalPhone">Phone</label>
-              <input class="settings__input" type="tel" id="personalPhone" placeholder="+1 (555) 123-4567" autocomplete="tel">
+              <input class="settings__input" type="tel" id="personalPhone" placeholder="(555) 123-4567" autocomplete="tel">
             </div>
           </div>
 
-          <div class="settings__field">
-            <label class="settings__label" for="personalAddress">Street Address</label>
-            <input class="settings__input" type="text" id="personalAddress" placeholder="123 Main St" autocomplete="street-address">
+          <div class="settings__row settings__row--2col">
+            <div class="settings__field">
+              <label class="settings__label" for="personalPhoneType">Phone Type</label>
+              <select class="settings__select" id="personalPhoneType">
+                <option value="Mobile">Mobile</option>
+                <option value="Home">Home</option>
+                <option value="Work">Work</option>
+              </select>
+            </div>
+            <div class="settings__field">
+              <label class="settings__label" for="personalPhoneCountryCode">Phone Country Code <span class="settings__label-hint">(e.g. +1 or +91)</span></label>
+              <input class="settings__input" type="text" id="personalPhoneCountryCode" placeholder="+1" autocomplete="tel-country-code">
+            </div>
+          </div>
+
+          <div class="settings__row settings__row--2col">
+            <div class="settings__field">
+              <label class="settings__label" for="personalAddress">Street Address</label>
+              <input class="settings__input" type="text" id="personalAddress" placeholder="123 Main St" autocomplete="address-line1">
+            </div>
+            <div class="settings__field">
+              <label class="settings__label" for="personalAddress2">Address Line 2 <span class="settings__label-hint">(optional)</span></label>
+              <input class="settings__input" type="text" id="personalAddress2" placeholder="Apt 4B" autocomplete="address-line2">
+            </div>
           </div>
 
           <div class="settings__row settings__row--3col">
@@ -157,11 +199,31 @@
       <!-- ─── SECTION: Education ─────────────────────── -->
       <section class="settings__section" id="section-education" hidden>
         <h2 class="settings__section-title">Education</h2>
-        <p class="settings__section-desc">Add your educational background. You can add multiple entries.</p>
+        <p class="settings__section-desc">Add your educational background. You can add multiple entries.
+          If a form's list doesn't have your college or course, OriginFill picks <b>Other</b> / <b>Not listed</b> and types the name in the box that appears (such as "Enter your college name").</p>
 
         <div class="settings__entries" id="educationEntries">
           <!-- Populated by JS -->
         </div>
+        <datalist id="degreeOptions">
+          <option value="B.Tech"></option>
+          <option value="B.E."></option>
+          <option value="B.Sc"></option>
+          <option value="B.Com"></option>
+          <option value="BCA"></option>
+          <option value="BBA"></option>
+          <option value="M.Tech"></option>
+          <option value="M.Sc"></option>
+          <option value="MCA"></option>
+          <option value="MBA"></option>
+          <option value="Diploma"></option>
+          <option value="12th / Intermediate"></option>
+          <option value="High School Diploma"></option>
+          <option value="Associate's Degree"></option>
+          <option value="Bachelor's Degree"></option>
+          <option value="Master's Degree"></option>
+          <option value="Doctorate (PhD)"></option>
+        </datalist>
 
         <button class="settings__btn settings__btn--secondary" id="addEducationBtn">
           <span>+</span> Add Education
@@ -185,7 +247,7 @@
       <!-- ─── SECTION: Resume ────────────────────────── -->
       <section class="settings__section" id="section-resume" hidden>
         <h2 class="settings__section-title">Resume</h2>
-        <p class="settings__section-desc">Upload up to 3 resume versions. PDF format, max 5MB each.</p>
+        <p class="settings__section-desc">Upload up to 3 resume versions (PDF or Word, max 5MB each). The one marked <b>Default</b> is uploaded to applications.</p>
 
         <div class="settings__resumes" id="resumesList">
           <!-- Populated by JS -->
@@ -237,6 +299,65 @@
         </div>
       </section>
 
+      <!-- ─── SECTION: Application Answers ───────────── -->
+      <section class="settings__section" id="section-answers" hidden>
+        <h2 class="settings__section-title">Application Answers</h2>
+        <p class="settings__section-desc">Answer the questions applications keep asking — once. OriginFill only answers what you've set here; anything left on "Not set" stays for you to answer.</p>
+
+        <div class="settings__form">
+          <div class="settings__row settings__row--2col">
+            <div class="settings__field">
+              <label class="settings__label" for="appReferralSource">How did you hear about us?</label>
+              <input class="settings__input" type="text" id="appReferralSource" list="referralSourceOptions" placeholder="LinkedIn">
+              <datalist id="referralSourceOptions">
+                <option value="LinkedIn"></option>
+                <option value="Company Website"></option>
+                <option value="Indeed"></option>
+                <option value="Glassdoor"></option>
+                <option value="Employee Referral"></option>
+                <option value="Job Board"></option>
+              </datalist>
+            </div>
+            <div class="settings__field">
+              <label class="settings__label" for="appPreviouslyEmployed">Previously worked for the company?</label>
+              <select class="settings__select" id="appPreviouslyEmployed">
+                <option value="">Don't fill — I'll answer each time</option>
+                <option value="No">No</option>
+                <option value="Yes">Yes</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings__divider"></div>
+          <h3 class="settings__subsection-title">Common questions</h3>
+          <div class="settings__faq" id="faqList">
+            <!-- Populated by JS from utils/faq.js -->
+          </div>
+
+          <div class="settings__divider"></div>
+          <h3 class="settings__subsection-title">Your own saved answers</h3>
+          <div class="settings__info-box">
+            <span class="settings__info-icon">💡</span>
+            <div>
+              <strong>For any other question</strong>
+              <p>Type a few words from the question and your answer. A question is answered when all of its words appear in the form's question, e.g. <b>reason for leaving</b> → <b>Career growth</b>. For dropdowns and Yes/No buttons, use the option's wording. These take priority over the common questions above.</p>
+            </div>
+          </div>
+
+          <div class="settings__answers" id="answersList">
+            <!-- Populated by JS -->
+          </div>
+          <div>
+            <button class="settings__btn settings__btn--secondary" id="addAnswerBtn"><span>+</span> Add Answer</button>
+          </div>
+        </div>
+
+        <div class="settings__form-actions">
+          <button class="settings__btn settings__btn--primary" id="saveAnswersBtn">Save Changes</button>
+          <span class="settings__save-status" id="answersSaveStatus"></span>
+        </div>
+      </section>
+
       <!-- ─── SECTION: Extension Settings ────────────── -->
       <section class="settings__section" id="section-extension" hidden>
         <h2 class="settings__section-title">Extension Settings</h2>
@@ -256,11 +377,33 @@
 
             <div class="settings__toggle-row">
               <div>
-                <span class="settings__toggle-label">Auto-fill on detection</span>
-                <span class="settings__toggle-desc">Automatically fill forms when a portal is detected</span>
+                <span class="settings__toggle-label">Auto-fill each new page</span>
+                <span class="settings__toggle-desc">Fill every application step as soon as it opens (you still review and submit)</span>
               </div>
               <label class="settings__switch" for="toggleAutoFill">
                 <input type="checkbox" id="toggleAutoFill">
+                <span class="settings__switch-slider"></span>
+              </label>
+            </div>
+
+            <div class="settings__toggle-row">
+              <div>
+                <span class="settings__toggle-label">Show the Autofill button on application pages</span>
+                <span class="settings__toggle-desc">A floating ⚡ Autofill button that fills the current step in one click</span>
+              </div>
+              <label class="settings__switch" for="toggleFloatingButton">
+                <input type="checkbox" id="toggleFloatingButton" checked>
+                <span class="settings__switch-slider"></span>
+              </label>
+            </div>
+
+            <div class="settings__toggle-row">
+              <div>
+                <span class="settings__toggle-label">Replace values already in a field</span>
+                <span class="settings__toggle-desc">Off: fields that already have a value (e.g. from Workday's résumé parsing) are left alone</span>
+              </div>
+              <label class="settings__switch" for="toggleOverwrite">
+                <input type="checkbox" id="toggleOverwrite" checked>
                 <span class="settings__switch-slider"></span>
               </label>
             </div>
@@ -279,10 +422,21 @@
             <div class="settings__toggle-row">
               <div>
                 <span class="settings__toggle-label">Session recovery</span>
-                <span class="settings__toggle-desc">Save form data automatically to recover after timeouts</span>
+                <span class="settings__toggle-desc">Save what you type (never passwords) so it can be restored after a session timeout</span>
               </div>
               <label class="settings__switch" for="toggleRecovery">
                 <input type="checkbox" id="toggleRecovery" checked>
+                <span class="settings__switch-slider"></span>
+              </label>
+            </div>
+
+            <div class="settings__toggle-row">
+              <div>
+                <span class="settings__toggle-label">Debug logging</span>
+                <span class="settings__toggle-desc">Write detailed [OriginFill] logs to the page console — useful when reporting a problem</span>
+              </div>
+              <label class="settings__switch" for="toggleDebug">
+                <input type="checkbox" id="toggleDebug">
                 <span class="settings__switch-slider"></span>
               </label>
             </div>
@@ -291,8 +445,8 @@
           <div class="settings__divider"></div>
 
           <div class="settings__field">
-            <label class="settings__label" for="fillDelaySlider">Fill Delay: <span id="fillDelayValue">300</span>ms</label>
-            <input class="settings__slider" type="range" id="fillDelaySlider" min="100" max="1000" step="50" value="300">
+            <label class="settings__label" for="fillDelaySlider">Fill Delay: <span id="fillDelayValue">150</span>ms</label>
+            <input class="settings__slider" type="range" id="fillDelaySlider" min="0" max="1000" step="50" value="150">
             <span class="settings__slider-hint">Lower = faster fill, Higher = more reliable on slow pages</span>
           </div>
 
@@ -372,7 +526,7 @@
 
         <div class="settings__about">
           <div class="settings__about-header">
-            <img src="../assets/icons/icon128.png" alt="OriginFill" class="settings__about-logo" width="64" height="64">
+            <img src="../assets/icons/logo128.png" alt="OriginFill" class="settings__about-logo" width="64" height="64">
             <div>
               <h3 class="settings__about-name">OriginFill</h3>
               <p class="settings__about-tagline">Never lose a job application form again.</p>
@@ -381,16 +535,16 @@
           </div>
 
           <div class="settings__about-links">
-            <a href="https://github.com/CharyWorld/OriginFill" target="_blank" rel="noopener" class="settings__about-link">
+            <a href="https://github.com/revanthchary04/Origin---Auto-Filler-Portal" target="_blank" rel="noopener" class="settings__about-link">
               <span>🔗</span> GitHub Repository
             </a>
-            <a href="https://github.com/CharyWorld/OriginFill/issues/new?template=bug_report.md" target="_blank" rel="noopener" class="settings__about-link">
+            <a href="https://github.com/revanthchary04/Origin---Auto-Filler-Portal/issues/new" target="_blank" rel="noopener" class="settings__about-link">
               <span>🐛</span> Report a Bug
             </a>
-            <a href="https://github.com/CharyWorld/OriginFill/issues/new?template=feature_request.md" target="_blank" rel="noopener" class="settings__about-link">
+            <a href="https://github.com/revanthchary04/Origin---Auto-Filler-Portal/issues/new" target="_blank" rel="noopener" class="settings__about-link">
               <span>💡</span> Request a Feature
             </a>
-            <a href="https://github.com/CharyWorld/OriginFill/blob/main/CHANGELOG.md" target="_blank" rel="noopener" class="settings__about-link">
+            <a href="https://github.com/revanthchary04/Origin---Auto-Filler-Portal/blob/main/CHANGELOG.md" target="_blank" rel="noopener" class="settings__about-link">
               <span>📋</span> Changelog
             </a>
           </div>
@@ -425,6 +579,9 @@
 
   <script src="../utils/constants.js"></script>
   <script src="../utils/logger.js"></script>
+  <script src="../utils/fuzzy-match.js"></script>
+  <script src="../utils/field-mapper.js"></script>
+  <script src="../utils/faq.js"></script>
   <script src="../storage/encryption.js"></script>
   <script src="../storage/store.js"></script>
   <script src="settings.js"></script>

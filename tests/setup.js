@@ -4,7 +4,9 @@ const path = require('path');
 // Mock Chrome API
 global.chrome = {
   runtime: {
-    sendMessage: jest.fn(),
+    id: 'test-extension',
+    sendMessage: jest.fn(() => Promise.resolve()),
+    getManifest: jest.fn(() => ({ version: '0.0.0-test' })),
     onMessage: {
       addListener: jest.fn()
     }
@@ -14,6 +16,9 @@ global.chrome = {
       get: jest.fn().mockResolvedValue({}),
       set: jest.fn().mockResolvedValue({}),
       remove: jest.fn().mockResolvedValue({})
+    },
+    onChanged: {
+      addListener: jest.fn()
     }
   }
 };
@@ -38,6 +43,17 @@ global.CSS = {
   escape: jest.fn(str => str)
 };
 
+// jsdom has no layout: treat connected elements as visible unless hidden by CSS or [hidden]
+Element.prototype.checkVisibility = function checkVisibility() {
+  if (!this.isConnected) return false;
+  for (let el = this; el; el = el.parentElement) {
+    if (el.hidden) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+  }
+  return true;
+};
+
 // Mock OriginFillDetector
 global.OriginFillDetector = {
   getInputLabel: jest.fn((el) => {
@@ -58,4 +74,21 @@ global.loadExtensionScript = function(filePath) {
   // Convert const OriginFillXXX = ... to global.OriginFillXXX = ...
   code = code.replace(/(?:const|let|var)\s+(OriginFill[a-zA-Z0-9_]+)\s*=/g, 'global.$1 =');
   eval(code);
+};
+
+/** Load the content-script bundle in manifest order (constants → … → filler). */
+global.loadContentScripts = function(...extra) {
+  const root = path.join(__dirname, '..');
+  [
+    'utils/constants.js',
+    'utils/logger.js',
+    'utils/dom-actions.js',
+    'utils/fuzzy-match.js',
+    'utils/field-mapper.js',
+    'content/portals/workday.js',
+    'content/portals/generic.js',
+    'content/detector.js',
+    'content/filler.js',
+    ...extra
+  ].forEach(file => global.loadExtensionScript(path.join(root, file)));
 };

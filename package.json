@@ -1,18 +1,24 @@
 {
-  "name": "origin---auto-filler-portal",
-  "version": "1.0.0",
-  "description": "> *\"Never lose a job application form again.\"*",
-  "main": "index.js",
+  "name": "originfill",
+  "version": "1.4.0",
+  "description": "Chrome extension that fills Workday (and other) job applications from your saved profile.",
   "scripts": {
-    "test": "jest"
+    "test": "jest",
+    "test:e2e": "node tests/e2e/run.js",
+    "package": "node scripts/package.js"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/revanthchary04/Origin---Auto-Filler-Portal.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "chrome-extension",
+    "workday",
+    "autofill",
+    "job-application"
+  ],
+  "author": "RevanthChary04, SaikrishnaMangalaprthi",
+  "license": "AGPL-3.0-only",
   "type": "commonjs",
   "bugs": {
     "url": "https://github.com/revanthchary04/Origin---Auto-Filler-Portal/issues"
@@ -21,6 +27,11 @@
   "devDependencies": {
     "jest": "^30.5.1",
     "jest-environment-jsdom": "^29.7.0",
-    "jsdom": "^22.1.0"
+    "jquery": "3.7.1",
+    "jsdom": "^22.1.0",
+    "playwright-core": "^1.57.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "select2": "4.0.13"
   }
 }

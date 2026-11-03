@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Acme — Apply (mock Lever form)</title>
+  <style>body { font-family: system-ui, sans-serif; margin: 24px; } .application-question { margin: 10px 0; } label { display: block; }</style>
+</head>
+<body>
+  <form class="application-form" onsubmit="event.preventDefault()">
+    <h4>Submit your application</h4>
+    <div class="application-question"><label for="resume">Resume/CV</label><input type="file" id="resume" name="resume"></div>
+    <div class="application-question"><label>Full name <input type="text" name="name"></label></div>
+    <div class="application-question"><label>Email <input type="email" name="email"></label></div>
+    <div class="application-question"><label>Phone <input type="text" name="phone"></label></div>
+    <div class="application-question"><label>Current location <input type="text" name="location"></label></div>
+    <div class="application-question"><label>Current company <input type="text" name="org"></label></div>
+    <h4>Links</h4>
+    <div class="application-question"><label>LinkedIn URL <input type="text" name="urls[LinkedIn]"></label></div>
+    <div class="application-question">
+      <label>Will you now or in the future require sponsorship?
+        <select name="sponsorship"><option value="">Select...</option><option value="yes">Yes</option><option value="no">No</option></select>
+      </label>
+    </div>
+    <!-- Campus-style education: lists with "Others" that reveal a box for the real name -->
+    <h4>Education</h4>
+    <div class="application-question">
+      <label for="college">College Name</label>
+      <select id="college" name="college">
+        <option value="">Select...</option>
+        <option value="iitb">IIT Bombay</option>
+        <option value="iitd">IIT Delhi</option>
+        <option value="bits">BITS Pilani</option>
+        <option value="others">Others</option>
+      </select>
+    </div>
+    <div class="application-question" id="collegeOtherRow" hidden>
+      <label for="collegeOther">Enter your college name</label>
+      <input type="text" id="collegeOther" name="collegeOther">
+    </div>
+    <div class="application-question">
+      <label for="course">Course</label>
+      <select id="course" name="course">
+        <option value="">Select...</option>
+        <option>B.Tech</option><option>M.Tech</option><option>MCA</option><option>Other</option>
+      </select>
+    </div>
+    <div class="application-question" id="courseOtherRow" hidden>
+      <label for="courseOther">Please specify</label>
+      <input type="text" id="courseOther" name="courseOther">
+    </div>
+    <div class="application-question">
+      <label for="branch">Branch</label>
+      <select id="branch" name="branch">
+        <option value="">Select...</option>
+        <option>Computer Science</option><option>Electronics</option><option>Mechanical</option><option>Other</option>
+      </select>
+    </div>
+    <button type="submit">Submit application</button>
+  </form>
+  <script>
+    const reveal = (selectId, rowId, otherValue) => {
+      const select = document.getElementById(selectId);
+      select.addEventListener('change', () => { document.getElementById(rowId).hidden = select.value !== otherValue; });
+    };
+    reveal('college', 'collegeOtherRow', 'others');
+    reveal('course', 'courseOtherRow', 'Other');
+  </script>
+</body>
+</html>

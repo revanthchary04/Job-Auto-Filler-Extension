@@ -7,7 +7,7 @@
  * @author CharyWorld
  */
 
-const OriginFillFuzzyMatch = (() => {
+var OriginFillFuzzyMatch = (() => {
   'use strict';
 
   // ─── Levenshtein Distance (Optimized Single-Row DP) ───────────
@@ -81,9 +81,11 @@ const OriginFillFuzzyMatch = (() => {
   function normalize(str) {
     if (!str) return '';
 
-    return str
+    return String(str)
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')                   // Strip accents (é → e)
       .toLowerCase()
-      .replace(/[''`]/g, '')                            // Remove apostrophes
+      .replace(/['’‘`]/g, '')                            // Remove apostrophes
       .replace(/[^\w\s]/g, ' ')                          // Replace punctuation with space
       .replace(/\b(the|of|a|an|and|at|in|for)\b/gi, '') // Remove articles/prepositions
       .replace(/\s+/g, ' ')                              // Collapse whitespace
@@ -198,7 +200,9 @@ const OriginFillFuzzyMatch = (() => {
 
   /**
    * STRATEGY 4: Keyword match.
-   * Split value into keywords, check if majority appear in any option.
+   * Split value and options into keywords. Score by how much of the value an option covers,
+   * penalising options with many extra words — so "United States" prefers
+   * "United States of America" over "United States Minor Outlying Islands".
    *
    * @param {string} value
    * @param {Array<{text: string, index: number}>} options
@@ -211,22 +215,29 @@ const OriginFillFuzzyMatch = (() => {
     }
 
     const minRatio = OriginFillFuzzyConfig.MIN_KEYWORD_MATCH_RATIO;
+    const wordsMatch = (kw, word) => kw === word ||
+      (kw.length >= 4 && word.startsWith(kw)) ||
+      (word.length >= 4 && kw.startsWith(word));
+
     let bestMatch = null;
     let bestRatio = 0;
+    let bestScore = 0;
 
     for (const option of options) {
-      const optionLower = option.text.toLowerCase();
-      let matched = 0;
+      const optionWords = extractKeywords(option.text);
+      if (optionWords.length === 0) continue;
 
-      for (const kw of keywords) {
-        if (optionLower.includes(kw)) {
-          matched++;
-        }
-      }
-
+      const matched = keywords.filter(kw => optionWords.some(word => wordsMatch(kw, word))).length;
       const ratio = matched / keywords.length;
+      if (ratio < minRatio) continue;
+      // "United States" must not match "United Arab Emirates" on one shared word
+      if (keywords.length <= 2 && matched < keywords.length) continue;
 
-      if (ratio >= minRatio && ratio > bestRatio) {
+      const precision = matched / optionWords.length;
+      const score = ratio * 0.7 + precision * 0.3;
+
+      if (score > bestScore) {
+        bestScore = score;
         bestRatio = ratio;
         bestMatch = option;
       }
@@ -416,10 +427,142 @@ const OriginFillFuzzyMatch = (() => {
     return bestMatch(value, options, config);
   }
 
+  // ─── Convenience: Pick a Dropdown Option ───────────────────────
+
+  /**
+   * Whether two labels say the same thing (case, punctuation and articles ignored).
+   * @param {string} a
+   * @param {string} b
+   * @returns {boolean}
+   */
+  function isSameText(a, b) {
+    if (!a || !b) return false;
+    return a.trim().toLowerCase() === b.trim().toLowerCase() || normalize(a) === normalize(b);
+  }
+
+  /**
+   * Pick the option that best matches any of the candidate values.
+   * Candidates are tried in priority order (the profile value first, then aliases), and exact
+   * matches on any candidate win over fuzzy matches. Never falls back to "Other"-style options.
+   *
+   * @param {Array<{ el: any, text: string }>} options
+   * @param {string[]} candidates
+   * @returns {{ el: any, text: string, confidence: string }|null}
+   */
+  function pickOption(options, candidates) {
+    const usable = options.filter(o => o.text && o.text.trim());
+    const values = candidates.filter(c => c !== undefined && c !== null && String(c).trim()).map(String);
+    if (usable.length === 0 || values.length === 0) return null;
+
+    for (const value of values) {
+      const exact = usable.find(o => isSameText(o.text, value));
+      if (exact) return { ...exact, confidence: 'exact' };
+    }
+
+    // "4" years against "0-2 years", "3-5 years", "5+ years" — word matching would just see "years"
+    if (NUMERIC_ANSWER.test(values[0].trim())) {
+      const inRange = pickRange(usable, values[0]);
+      return inRange ? { ...inRange, confidence: 'exact' } : null;
+    }
+
+    for (const value of values) {
+      const result = bestMatch(value, usable.map(o => o.text), { skipFallback: true });
+      if (result.matched && result.confidence !== 'low') {
+        return { ...usable[result.option.index], confidence: result.confidence };
+      }
+    }
+
+    return null;
+  }
+
+  /** A plain number of years: "4", "4.5", "4 years", "10+" */
+  const NUMERIC_ANSWER = /^\d+(\.\d+)?\s*(\+|years?|yrs?)?$/i;
+
+  /**
+   * The option whose numeric range contains a number: "3-5 years", "5+", "More than 10",
+   * "Less than 1 year", "Up to 2".
+   * @param {Array<{ text: string }>} options
+   * @param {string} value - A plain number, optionally followed by "years"
+   * @returns {Object|null}
+   */
+  function pickRange(options, value) {
+    const str = String(value).trim();
+    if (!NUMERIC_ANSWER.test(str)) return null;
+    const n = parseFloat(str);
+    const num = '(\\d+(?:\\.\\d+)?)';
+
+    for (const option of options) {
+      const text = option.text.toLowerCase();
+      let m = text.match(new RegExp(`${num}\\s*(?:-|–|—|to)\\s*${num}`));
+      if (m) {
+        if (n >= +m[1] && n <= +m[2]) return option;
+        continue;
+      }
+      m = text.match(new RegExp(`${num}\\s*\\+|(?:more|greater)\\s+than\\s+${num}|\\bover\\s+${num}|${num}\\s+(?:years?\\s+)?(?:or|and)\\s+(?:more|above|over)`));
+      if (m) {
+        const inclusive = m[1] !== undefined || m[4] !== undefined;
+        const min = +(m[1] ?? m[2] ?? m[3] ?? m[4]);
+        if (inclusive ? n >= min : n > min) return option;
+        continue;
+      }
+      m = text.match(new RegExp(`(?:less|fewer)\\s+than\\s+${num}|\\bunder\\s+${num}|\\bbelow\\s+${num}|\\bup\\s+to\\s+${num}`));
+      if (m) {
+        const inclusive = m[4] !== undefined;
+        const max = +(m[1] ?? m[2] ?? m[3] ?? m[4]);
+        if (inclusive ? n <= max : n < max) return option;
+        continue;
+      }
+      m = text.match(new RegExp(`^${num}\\s*(?:years?|yrs?)?$`));
+      if (m && n === +m[1]) return option;
+    }
+    return null;
+  }
+
   // ─── Public API ─────────────────────────────────────────────────
+  /**
+   * How strongly an option reads as "my answer isn't listed": "Other" / "Others (please
+   * specify)" and "Not listed" / "Not found" score highest, "Other University" next,
+   * "None of the above" last. 0 for anything else ("None" and "N/A" mean something different).
+   * @param {string} text
+   * @returns {number}
+   */
+  function otherOptionScore(text) {
+    const t = String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    if (!t) return 0;
+    if (/^others?( please specify| specify)?$/.test(t)) return 4;
+    if (/\b(not listed|unlisted|not found|not in (the )?list|not available in (the )?list|can t find|cannot find|could not find|couldn t find)\b/.test(t)) return 3;
+    if (/^others?\b/.test(t) && t.split(' ').length <= 6) return 2;
+    if (/\bnone of (the )?above\b/.test(t)) return 1;
+    return 0;
+  }
+
+  /**
+   * The "Other" / "Not listed" choice in a list, for when the real answer (a college or
+   * course the form doesn't know) is missing. Only used when a caller asks for it: pickOption
+   * itself never falls back to "Other".
+   * @param {Array<{el: any, text: string}>} options
+   * @returns {{el: any, text: string, confidence: 'other'}|null}
+   */
+  function pickOtherOption(options) {
+    let best = null;
+    let bestScore = 0;
+    for (const option of options || []) {
+      const score = otherOptionScore(option.text);
+      if (score > bestScore) {
+        best = option;
+        bestScore = score;
+      }
+    }
+    return best ? { ...best, confidence: 'other' } : null;
+  }
+
   return Object.freeze({
     bestMatch,
     matchSelectOptions,
+    pickOption,
+    pickOtherOption,
+    otherOptionScore,
+    isSameText,
     levenshteinDistance,
     normalize,
     extractKeywords,

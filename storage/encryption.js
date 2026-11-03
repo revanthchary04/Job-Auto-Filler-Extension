@@ -8,7 +8,7 @@
  * @author CharyWorld
  */
 
-const OriginFillEncryption = (() => {
+var OriginFillEncryption = (() => {
   'use strict';
 
   /** @type {CryptoKey|null} Cached encryption key for this session */

@@ -39,9 +39,15 @@
       if (activeProfile) loadProfileData(activeProfile);
       loadExtensionSettings();
 
+      // First visit from onboarding
+      const params = new URLSearchParams(window.location.search);
+      const profileIsEmpty = !activeProfile?.personal?.firstName && !activeProfile?.personal?.email;
+      $('welcomeBanner').hidden = !(params.get('welcome') || profileIsEmpty);
+
       // Set version
       $('versionText').textContent = `v${chrome.runtime.getManifest().version}`;
       $('aboutVersion').textContent = `Version ${chrome.runtime.getManifest().version}`;
+      checkForUpdatedFiles();
 
       // Mark first run as complete
       await OriginFillStore.completeFirstRun();
@@ -52,6 +58,23 @@
       $('versionText').textContent = `v${chrome.runtime.getManifest().version}`;
       showToast('❌', 'Failed to load settings data. See console.');
     }
+  }
+
+  /**
+   * An unpacked install keeps running its old code after the folder is updated, until the
+   * extension is reloaded. This page is read from disk, so compare the two versions.
+   */
+  async function checkForUpdatedFiles() {
+    try {
+      const running = chrome.runtime.getManifest().version;
+      const response = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
+      const onDisk = (await response.json()).version;
+      if (!onDisk || onDisk === running) return;
+      $('updateMeta').textContent = `Chrome is still running version ${running}, so autofill works the old way. ` +
+        `Version ${onDisk} is in the OriginFill folder. Reload it here (this page will close), then reload your job application tab.`;
+      $('reloadExtensionBtn').onclick = () => chrome.runtime.reload();
+      $('updateBanner').hidden = false;
+    } catch (e) { /* Store installs always match */ }
   }
 
   // ─── Navigation ────────────────────────────────────────────────
@@ -71,7 +94,17 @@
 
     // Handle hash navigation
     const hash = window.location.hash.slice(1);
-    if (hash) showSection(hash);
+    if (hash) {
+      showSection(hash);
+      updateNavHighlight(hash);
+    }
+    window.addEventListener('hashchange', () => {
+      const section = window.location.hash.slice(1);
+      if (section) {
+        showSection(section);
+        updateNavHighlight(section);
+      }
+    });
   }
 
   function showSection(name) {
@@ -163,7 +196,10 @@
 
   function updateNavHighlight(section) {
     $$('.settings__nav-item').forEach(n => {
-      n.classList.toggle('settings__nav-item--active', n.dataset.section === section);
+      const active = n.dataset.section === section;
+      n.classList.toggle('settings__nav-item--active', active);
+      if (active) n.setAttribute('aria-current', 'page');
+      else n.removeAttribute('aria-current');
     });
   }
 
@@ -178,6 +214,9 @@
     setVal('personalEmail', p.email);
     setVal('personalPhone', p.phone);
     setVal('personalAddress', p.address);
+    setVal('personalAddress2', p.address2);
+    setVal('personalPhoneType', p.phoneType || 'Mobile');
+    setVal('personalPhoneCountryCode', p.phoneCountryCode);
     setVal('personalCity', p.city);
     setVal('personalState', p.state);
     setVal('personalZipCode', p.zipCode);
@@ -186,6 +225,13 @@
     setVal('personalGithub', p.github);
     setVal('personalPortfolio', p.portfolio || (p.websites && p.websites.length > 0 ? p.websites[0] : ''));
     setVal('personalWebsites', (p.websites || []).join('\n') || (p.portfolio ? p.portfolio : ''));
+
+    // Application answers
+    const app = profile.application || {};
+    setVal('appReferralSource', app.referralSource);
+    setVal('appPreviouslyEmployed', app.previouslyEmployed);
+    renderCommonQuestions(profile);
+    renderAnswers(profile.answers || []);
 
     // Skills
     setVal('skillsInput', (profile.skills || []).join(', '));
@@ -222,25 +268,16 @@
         </div>
         <div class="settings__entry-body">
           <div class="settings__field">
-            <label class="settings__label">Institution</label>
-            <input class="settings__input edu-field" type="text" data-field="institution" data-index="${i}" value="${escapeHtml(edu.institution || '')}" placeholder="University name">
+            <label class="settings__label">College / University</label>
+            <input class="settings__input edu-field" type="text" data-field="institution" data-index="${i}" value="${escapeHtml(edu.institution || '')}" placeholder="Full name, e.g. Vasavi College of Engineering">
           </div>
           <div class="settings__row settings__row--2col">
             <div class="settings__field">
-              <label class="settings__label">Degree</label>
-              <select class="settings__select edu-field" data-field="degree" data-index="${i}">
-                <option value="">Select degree</option>
-                <option value="High School Diploma" ${edu.degree === 'High School Diploma' ? 'selected' : ''}>High School Diploma</option>
-                <option value="Associate's" ${edu.degree === "Associate's" ? 'selected' : ''}>Associate's</option>
-                <option value="Bachelor's" ${edu.degree === "Bachelor's" ? 'selected' : ''}>Bachelor's</option>
-                <option value="Master's" ${edu.degree === "Master's" ? 'selected' : ''}>Master's</option>
-                <option value="PhD" ${edu.degree === 'PhD' ? 'selected' : ''}>PhD</option>
-                <option value="MBA" ${edu.degree === 'MBA' ? 'selected' : ''}>MBA</option>
-                <option value="Other" ${edu.degree === 'Other' ? 'selected' : ''}>Other</option>
-              </select>
+              <label class="settings__label">Degree / Course</label>
+              <input class="settings__input edu-field" type="text" data-field="degree" data-index="${i}" value="${escapeHtml(edu.degree || '')}" list="degreeOptions" placeholder="B.Tech or Bachelor's Degree">
             </div>
             <div class="settings__field">
-              <label class="settings__label">Field of Study</label>
+              <label class="settings__label">Field of Study / Branch</label>
               <input class="settings__input edu-field" type="text" data-field="fieldOfStudy" data-index="${i}" value="${escapeHtml(edu.fieldOfStudy || '')}" placeholder="Computer Science">
             </div>
           </div>
@@ -250,8 +287,9 @@
               <input class="settings__input edu-field" type="text" data-field="startYear" data-index="${i}" value="${escapeHtml(edu.startYear || '')}" placeholder="2018">
             </div>
             <div class="settings__field">
-              <label class="settings__label">End Year</label>
-              <input class="settings__input edu-field" type="text" data-field="endYear" data-index="${i}" value="${escapeHtml(edu.endYear || '')}" placeholder="2022">
+              <label class="settings__label">End Year <span class="settings__label-hint">(or month/year)</span></label>
+              <input class="settings__input edu-field" type="text" data-field="endYear" data-index="${i}" value="${escapeHtml(edu.endYear || '')}" placeholder="2026 or 05/2026">
+              <span class="settings__date-hint" aria-live="polite"></span>
             </div>
             <div class="settings__field">
               <label class="settings__label">GPA</label>
@@ -270,6 +308,12 @@
       </div>
     `).join('');
 
+    // "Month of Graduation" questions need the month: show how the end is read
+    container.querySelectorAll('[data-field="endYear"]').forEach(input => {
+      updateDateHint(input);
+      input.addEventListener('input', () => updateDateHint(input));
+    });
+
     // Save buttons
     container.querySelectorAll('.edu-save').forEach(btn => {
       btn.addEventListener('click', () => saveEducation(parseInt(btn.dataset.index)));
@@ -281,14 +325,21 @@
     });
   }
 
+  /** Read every education entry from the form, so adding/removing entries keeps unsaved edits. */
+  function collectEducationForm() {
+    if (!activeProfile) return;
+    if (!activeProfile.education) activeProfile.education = [];
+    document.querySelectorAll('#educationEntries .settings__entry').forEach(entry => {
+      const index = parseInt(entry.dataset.index, 10);
+      const edu = {};
+      entry.querySelectorAll('.edu-field').forEach(f => { edu[f.dataset.field] = f.value.trim(); });
+      activeProfile.education[index] = { ...(activeProfile.education[index] || {}), ...edu };
+    });
+  }
+
   async function saveEducation(index) {
     if (!activeProfile) return;
-    const fields = document.querySelectorAll(`.edu-field[data-index="${index}"]`);
-    const edu = {};
-    fields.forEach(f => { edu[f.dataset.field] = f.value; });
-
-    if (!activeProfile.education) activeProfile.education = [];
-    activeProfile.education[index] = { ...(activeProfile.education[index] || {}), ...edu };
+    collectEducationForm();
 
     await OriginFillStore.updateProfile(activeProfile.id, { education: activeProfile.education });
     profiles = await OriginFillStore.getProfiles();
@@ -299,7 +350,7 @@
 
   async function addEducation() {
     if (!activeProfile) return;
-    if (!activeProfile.education) activeProfile.education = [];
+    collectEducationForm();
     activeProfile.education.push({ institution: '', degree: '', fieldOfStudy: '', startYear: '', endYear: '', gpa: '', location: '' });
     await OriginFillStore.updateProfile(activeProfile.id, { education: activeProfile.education });
     profiles = await OriginFillStore.getProfiles();
@@ -309,6 +360,7 @@
 
   async function deleteEducation(index) {
     if (!activeProfile || !activeProfile.education) return;
+    collectEducationForm();
     activeProfile.education.splice(index, 1);
     if (activeProfile.education.length === 0) {
       activeProfile.education.push({ institution: '', degree: '', fieldOfStudy: '', startYear: '', endYear: '', gpa: '', location: '' });
@@ -321,6 +373,35 @@
   }
 
   // ─── Work Experience Entries ───────────────────────────────────
+
+  const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+  /**
+   * Say how a typed work date will be read ("December 2020"), so a day-first or month-first
+   * mix-up shows here instead of on an application.
+   */
+  function updateDateHint(input) {
+    const hint = input.parentElement.querySelector('.settings__date-hint');
+    if (!hint) return;
+    const value = input.value.trim();
+    let text = '';
+    let bad = false;
+    if (value && !input.disabled) {
+      const date = OriginFillFieldMapper.parseDate(value, OriginFillFieldMapper.dateOrderFor(activeProfile));
+      if (!date) {
+        bad = true;
+        text = 'Can\'t read this date. Try 12/2020 or Dec 2020.';
+      } else if (date.current) {
+        text = 'Read as: still working here';
+      } else {
+        const month = date.month ? `${MONTH_NAMES[date.month - 1]} ` : '';
+        text = `Read as: ${date.day ? `${date.day} ` : ''}${month}${date.year}`;
+      }
+    }
+    hint.textContent = text;
+    hint.classList.toggle('settings__date-hint--bad', bad);
+  }
+
   function renderWorkEntries(entries) {
     const container = $('workEntries');
     if (!container) return;
@@ -347,11 +428,13 @@
           <div class="settings__row settings__row--2col">
             <div class="settings__field">
               <label class="settings__label">Start Date</label>
-              <input class="settings__input work-field" type="text" data-field="startDate" data-index="${i}" value="${escapeHtml(work.startDate || '')}" placeholder="2022-01">
+              <input class="settings__input work-field" type="text" data-field="startDate" data-index="${i}" value="${escapeHtml(work.startDate || '')}" placeholder="12/2020 or Dec 2020">
+              <span class="settings__date-hint" aria-live="polite"></span>
             </div>
             <div class="settings__field">
               <label class="settings__label">End Date</label>
-              <input class="settings__input work-field" type="text" data-field="endDate" data-index="${i}" value="${escapeHtml(work.endDate || '')}" placeholder="Present" ${work.isCurrent ? 'disabled' : ''}>
+              <input class="settings__input work-field" type="text" data-field="endDate" data-index="${i}" value="${escapeHtml(work.isCurrent ? '' : (work.endDate || ''))}" placeholder="${work.isCurrent ? 'Present' : '06/2024 or Jun 2024'}" ${work.isCurrent ? 'disabled' : ''}>
+              <span class="settings__date-hint" aria-live="polite"></span>
             </div>
           </div>
           <div class="settings__toggle-row" style="padding: 8px 0; border: none;">
@@ -387,6 +470,12 @@
       btn.addEventListener('click', () => deleteWork(parseInt(btn.dataset.index)));
     });
 
+    // Show how each date will be read
+    container.querySelectorAll('[data-field="startDate"], [data-field="endDate"]').forEach(input => {
+      updateDateHint(input);
+      input.addEventListener('input', () => updateDateHint(input));
+    });
+
     // isCurrent toggle — disable end date
     container.querySelectorAll('[data-field="isCurrent"]').forEach(toggle => {
       toggle.addEventListener('change', () => {
@@ -394,28 +483,39 @@
         const endDate = container.querySelector(`[data-field="endDate"][data-index="${idx}"]`);
         if (endDate) {
           endDate.disabled = toggle.checked;
-          if (toggle.checked) endDate.value = 'Present';
+          endDate.placeholder = toggle.checked ? 'Present' : '06/2024 or Jun 2024';
+          if (toggle.checked) endDate.value = '';
+          updateDateHint(endDate);
         }
       });
     });
   }
 
+  /** Read every work entry from the form, so adding/removing entries keeps unsaved edits. */
+  function collectWorkForm() {
+    if (!activeProfile) return;
+    if (!activeProfile.workExperience) activeProfile.workExperience = [];
+    document.querySelectorAll('#workEntries .settings__entry').forEach(entry => {
+      const index = parseInt(entry.dataset.index, 10);
+      const work = {};
+      entry.querySelectorAll('.work-field').forEach(f => {
+        if (f.dataset.field === 'isCurrent') {
+          work.isCurrent = f.checked;
+        } else if (f.dataset.field === 'bullets') {
+          work.bullets = f.value.split('\n').map(l => l.replace(/^[•\-*]\s*/, '').trim()).filter(Boolean).slice(0, OriginFillUI.MAX_BULLET_POINTS);
+        } else if (f.dataset.field === 'endDate' && entry.querySelector('[data-field="isCurrent"]')?.checked) {
+          work.endDate = '';
+        } else {
+          work[f.dataset.field] = f.value.trim();
+        }
+      });
+      activeProfile.workExperience[index] = { ...(activeProfile.workExperience[index] || {}), ...work };
+    });
+  }
+
   async function saveWork(index) {
     if (!activeProfile) return;
-    const fields = document.querySelectorAll(`.work-field[data-index="${index}"]`);
-    const work = {};
-    fields.forEach(f => {
-      if (f.dataset.field === 'isCurrent') {
-        work.isCurrent = f.checked;
-      } else if (f.dataset.field === 'bullets') {
-        work.bullets = f.value.split('\n').map(l => l.replace(/^[•\-]\s*/, '').trim()).filter(Boolean).slice(0, 6);
-      } else {
-        work[f.dataset.field] = f.value;
-      }
-    });
-
-    if (!activeProfile.workExperience) activeProfile.workExperience = [];
-    activeProfile.workExperience[index] = { ...(activeProfile.workExperience[index] || {}), ...work };
+    collectWorkForm();
 
     await OriginFillStore.updateProfile(activeProfile.id, { workExperience: activeProfile.workExperience });
     profiles = await OriginFillStore.getProfiles();
@@ -426,7 +526,7 @@
 
   async function addWork() {
     if (!activeProfile) return;
-    if (!activeProfile.workExperience) activeProfile.workExperience = [];
+    collectWorkForm();
     activeProfile.workExperience.push({ company: '', jobTitle: '', startDate: '', endDate: '', isCurrent: false, location: '', bullets: [''] });
     await OriginFillStore.updateProfile(activeProfile.id, { workExperience: activeProfile.workExperience });
     profiles = await OriginFillStore.getProfiles();
@@ -436,6 +536,7 @@
 
   async function deleteWork(index) {
     if (!activeProfile || !activeProfile.workExperience) return;
+    collectWorkForm();
     activeProfile.workExperience.splice(index, 1);
     if (activeProfile.workExperience.length === 0) {
       activeProfile.workExperience.push({ company: '', jobTitle: '', startDate: '', endDate: '', isCurrent: false, location: '', bullets: [''] });
@@ -456,23 +557,38 @@
     const list = $('resumesList');
     if (!list) return;
 
+    resumes.sort((a, b) => String(a.uploadedAt || '').localeCompare(String(b.uploadedAt || '')));
+    const defaultId = resumes.some(r => r.id === activeProfile.resume?.defaultId)
+      ? activeProfile.resume.defaultId
+      : resumes[0]?.id;
+
     list.innerHTML = resumes.map(r => `
-      <div class="settings__resume-card" data-resume-id="${r.id}">
+      <div class="settings__resume-card" data-resume-id="${escapeHtml(r.id)}">
         <span class="settings__resume-icon">📄</span>
         <div class="settings__resume-info">
-          <div class="settings__resume-name">${escapeHtml(r.label || r.fileName)}</div>
+          <div class="settings__resume-name">${escapeHtml(r.label || r.fileName)}${r.id === defaultId ? '<span class="settings__resume-badge">Default</span>' : ''}</div>
           <div class="settings__resume-meta">${escapeHtml(r.fileName)} · Uploaded ${new Date(r.uploadedAt).toLocaleDateString()}</div>
         </div>
-        <button class="settings__btn settings__btn--sm settings__btn--ghost resume-delete" data-id="${r.id}" title="Delete">🗑️</button>
+        ${r.id === defaultId ? '' : `<button class="settings__btn settings__btn--sm settings__btn--ghost resume-default" data-id="${escapeHtml(r.id)}" title="Upload this one to applications">Make default</button>`}
+        <button class="settings__btn settings__btn--sm settings__btn--ghost resume-delete" data-id="${escapeHtml(r.id)}" title="Delete" aria-label="Delete resume">🗑️</button>
       </div>
-    `).join('');
+    `).join('') || '<p class="settings__answers-empty">No resume uploaded yet.</p>';
 
     // Check limit
     const uploadBtn = $('uploadResumeBtn');
-    if (resumes.length >= 3) {
-      uploadBtn.disabled = true;
-      uploadBtn.title = 'Maximum 3 resumes';
-    }
+    const atLimit = resumes.length >= OriginFillUI.MAX_RESUME_COUNT;
+    uploadBtn.disabled = atLimit || !pendingResumeFile;
+    uploadBtn.title = atLimit ? `Maximum ${OriginFillUI.MAX_RESUME_COUNT} resumes — delete one first` : '';
+
+    list.querySelectorAll('.resume-default').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await OriginFillStore.updateProfile(activeProfile.id, { resume: { ...(activeProfile.resume || {}), defaultId: btn.dataset.id } });
+        profiles = await OriginFillStore.getProfiles();
+        activeProfile = profiles.find(p => p.id === activeProfile.id);
+        loadResumes();
+        showToast('✅', 'Default resume updated');
+      });
+    });
 
     // Delete buttons
     list.querySelectorAll('.resume-delete').forEach(btn => {
@@ -482,6 +598,21 @@
         showToast('🗑️', 'Resume deleted');
       });
     });
+  }
+
+  function selectResumeFile(file) {
+    if (!/\.(pdf|docx?|rtf|txt)$/i.test(file.name)) {
+      showToast('⚠️', 'Use a PDF or Word document');
+      return;
+    }
+    if (file.size > OriginFillUI.MAX_RESUME_SIZE_MB * 1024 * 1024) {
+      showToast('⚠️', `File too large (max ${OriginFillUI.MAX_RESUME_SIZE_MB}MB)`);
+      return;
+    }
+    pendingResumeFile = file;
+    $('uploadResumeBtn').disabled = false;
+    $('uploadZone').querySelector('.settings__upload-hint').textContent = `Selected: ${file.name}`;
+    if (!$('resumeLabel').value) $('resumeLabel').value = file.name.replace(/\.[^.]+$/, '');
   }
 
   async function uploadResume() {
@@ -498,11 +629,17 @@
         id: 'resume_' + Date.now().toString(36),
         label,
         fileName: pendingResumeFile.name,
+        mimeType: pendingResumeFile.type || '',
         fileData: base64,
         uploadedAt: new Date().toISOString()
       };
 
-      await OriginFillStore.saveResume(activeProfile.id, resumeData);
+      try {
+        await OriginFillStore.saveResume(activeProfile.id, resumeData);
+      } catch (err) {
+        showToast('⚠️', err.message);
+        return;
+      }
       pendingResumeFile = null;
       $('resumeLabel').value = '';
       $('uploadResumeBtn').disabled = true;
@@ -536,6 +673,9 @@
         email: $('personalEmail').value,
         phone: $('personalPhone').value,
         address: $('personalAddress').value,
+        address2: $('personalAddress2').value,
+        phoneType: $('personalPhoneType').value,
+        phoneCountryCode: $('personalPhoneCountryCode').value.trim(),
         city: $('personalCity').value,
         state: $('personalState').value,
         zipCode: $('personalZipCode').value,
@@ -545,10 +685,11 @@
         portfolio: $('personalPortfolio').value,
         websites: $('personalWebsites').value.split('\n').map(s => s.trim()).filter(Boolean)
       };
-      await OriginFillStore.updateProfile(activeProfile.id, { personal, websites: $('personalWebsites').value.split('\n').map(s => s.trim()).filter(Boolean) });
+      await OriginFillStore.updateProfile(activeProfile.id, { personal, websites: personal.websites });
 
       profiles = await OriginFillStore.getProfiles();
       activeProfile = profiles.find(p => p.id === activeProfile.id);
+      $('welcomeBanner').hidden = true;
       showToast('✅', 'Personal info saved');
     });
 
@@ -576,6 +717,30 @@
       showToast('✅', 'Skills saved');
     });
 
+    // Application answers
+    $('addAnswerBtn').addEventListener('click', () => {
+      const answers = collectAnswers();
+      answers.push({ question: '', answer: '' });
+      renderAnswers(answers);
+      const rows = $('answersList').querySelectorAll('.answer-question');
+      if (rows.length) rows[rows.length - 1].focus();
+    });
+
+    $('saveAnswersBtn').addEventListener('click', async () => {
+      if (!activeProfile) return;
+      const application = {
+        referralSource: $('appReferralSource').value.trim(),
+        previouslyEmployed: $('appPreviouslyEmployed').value
+      };
+      const answers = collectAnswers().filter(a => a.question && a.answer);
+      // Replace (not merge) so cleared answers are removed
+      await OriginFillStore.replaceProfileFields(activeProfile.id, { application, answers, faq: collectCommonQuestions() });
+      profiles = await OriginFillStore.getProfiles();
+      activeProfile = profiles.find(p => p.id === activeProfile.id);
+      renderAnswers(activeProfile.answers || []);
+      showToast('✅', 'Answers saved');
+    });
+
     // Add education / work
     $('addEducationBtn').addEventListener('click', addEducation);
     $('addWorkBtn').addEventListener('click', addWork);
@@ -585,16 +750,7 @@
     $('browseBtn').addEventListener('click', (e) => { e.preventDefault(); fileInput.click(); });
 
     fileInput.addEventListener('change', () => {
-      const file = fileInput.files[0];
-      if (file) {
-        if (file.size > 5 * 1024 * 1024) {
-          showToast('⚠️', 'File too large (max 5MB)');
-          return;
-        }
-        pendingResumeFile = file;
-        $('uploadResumeBtn').disabled = false;
-        if (!$('resumeLabel').value) $('resumeLabel').value = file.name.replace(/\.[^.]+$/, '');
-      }
+      if (fileInput.files[0]) selectResumeFile(fileInput.files[0]);
     });
 
     $('uploadResumeBtn').addEventListener('click', uploadResume);
@@ -606,13 +762,7 @@
     uploadZone.addEventListener('drop', (e) => {
       e.preventDefault();
       uploadZone.classList.remove('settings__upload-zone--dragover');
-      const file = e.dataTransfer.files[0];
-      if (file) {
-        if (file.size > 5 * 1024 * 1024) { showToast('⚠️', 'File too large'); return; }
-        pendingResumeFile = file;
-        $('uploadResumeBtn').disabled = false;
-        if (!$('resumeLabel').value) $('resumeLabel').value = file.name.replace(/\.[^.]+$/, '');
-      }
+      if (e.dataTransfer.files[0]) selectResumeFile(e.dataTransfer.files[0]);
     });
 
     // Extension settings
@@ -623,11 +773,15 @@
     $('saveExtSettingsBtn').addEventListener('click', async () => {
       settings.autoDetect = $('toggleAutoDetect').checked;
       settings.autoFillOnDetect = $('toggleAutoFill').checked;
+      settings.showFloatingButton = $('toggleFloatingButton').checked;
+      settings.overwriteExisting = $('toggleOverwrite').checked;
+      settings.debugLogging = $('toggleDebug').checked;
       settings.showNotifications = $('toggleNotifications').checked;
       settings.recoveryEnabled = $('toggleRecovery').checked;
       settings.fillDelay = parseInt($('fillDelaySlider').value, 10);
       settings.theme = $('themeSelect').value;
-      await OriginFillStore.saveSettings(settings);
+      const { activeProfileId, ...changes } = settings;
+      settings = await OriginFillStore.updateSettings(changes);
       applyTheme();
       showToast('✅', 'Settings saved');
     });
@@ -687,14 +841,103 @@
     });
   }
 
+  // ─── Common Questions ──────────────────────────────────────────
+  function renderCommonQuestions(profile) {
+    const list = $('faqList');
+    if (!list || typeof OriginFillFAQ === 'undefined') return;
+    const answers = profile.faq || {};
+
+    list.innerHTML = OriginFillFAQ.groupedForSettings().map(({ group, entries }) => `
+      <div class="settings__faq-group">
+        <div class="settings__faq-group-title">${escapeHtml(group.title)}</div>
+        ${entries.map(entry => {
+          const current = answers[entry.id] || '';
+          const controlId = `faq-${entry.id}`;
+          if (entry.type === 'text') {
+            const suggestion = entry.derive ? entry.derive(profile, answers) : '';
+            const placeholder = suggestion ? `Auto: ${suggestion}` : (entry.placeholder || '');
+            return `
+              <div class="settings__faq-row">
+                <label class="settings__faq-question" for="${controlId}">${escapeHtml(entry.question)}</label>
+                <input class="settings__input settings__faq-input" type="text" id="${controlId}" data-faq-id="${escapeHtml(entry.id)}"
+                       value="${escapeHtml(current)}" placeholder="${escapeHtml(placeholder)}">
+              </div>`;
+          }
+          const options = ['', ...Object.keys(entry.choices)];
+          return `
+            <div class="settings__faq-row">
+              <span class="settings__faq-question" id="${controlId}-label">${escapeHtml(entry.question)}</span>
+              <div class="settings__segmented" role="radiogroup" aria-labelledby="${controlId}-label" data-faq-id="${escapeHtml(entry.id)}">
+                ${options.map(option => `
+                  <label class="settings__segment${option ? '' : ' settings__segment--unset'}">
+                    <input type="radio" name="${controlId}" value="${escapeHtml(option)}" ${option === current ? 'checked' : ''}>
+                    <span>${option ? escapeHtml(option) : 'Not set'}</span>
+                  </label>`).join('')}
+              </div>
+            </div>`;
+        }).join('')}
+      </div>
+    `).join('');
+  }
+
+  function collectCommonQuestions() {
+    const faq = {};
+    document.querySelectorAll('#faqList .settings__faq-input').forEach(input => {
+      if (input.value.trim()) faq[input.dataset.faqId] = input.value.trim();
+    });
+    document.querySelectorAll('#faqList .settings__segmented').forEach(group => {
+      const checked = group.querySelector('input:checked');
+      if (checked && checked.value) faq[group.dataset.faqId] = checked.value;
+    });
+    return faq;
+  }
+
+  // ─── Saved Answers ─────────────────────────────────────────────
+  function renderAnswers(answers) {
+    const list = $('answersList');
+    if (!list) return;
+
+    if (!answers.length) {
+      list.innerHTML = '<p class="settings__answers-empty">No saved answers yet.</p>';
+      return;
+    }
+
+    list.innerHTML = answers.map((a, i) => `
+      <div class="settings__answer-row" data-index="${i}">
+        <input class="settings__input answer-question" type="text" value="${escapeHtml(a.question || '')}" placeholder="Question words, e.g. require sponsorship" aria-label="Question ${i + 1}">
+        <input class="settings__input answer-answer" type="text" value="${escapeHtml(a.answer || '')}" placeholder="Answer, e.g. No" aria-label="Answer ${i + 1}">
+        <button class="settings__btn settings__btn--sm settings__btn--ghost answer-delete" title="Remove" aria-label="Remove answer ${i + 1}">🗑️</button>
+      </div>
+    `).join('');
+
+    list.querySelectorAll('.answer-delete').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const index = parseInt(btn.closest('.settings__answer-row').dataset.index, 10);
+        const current = collectAnswers();
+        current.splice(index, 1);
+        renderAnswers(current);
+      });
+    });
+  }
+
+  function collectAnswers() {
+    return Array.from(document.querySelectorAll('#answersList .settings__answer-row')).map(row => ({
+      question: row.querySelector('.answer-question').value.trim(),
+      answer: row.querySelector('.answer-answer').value.trim()
+    }));
+  }
+
   // ─── Load Extension Settings into Form ─────────────────────────
   function loadExtensionSettings() {
     $('toggleAutoDetect').checked = settings.autoDetect !== false;
     $('toggleAutoFill').checked = settings.autoFillOnDetect === true;
+    $('toggleFloatingButton').checked = settings.showFloatingButton !== false;
+    $('toggleOverwrite').checked = settings.overwriteExisting !== false;
+    $('toggleDebug').checked = settings.debugLogging === true;
     $('toggleNotifications').checked = settings.showNotifications !== false;
     $('toggleRecovery').checked = settings.recoveryEnabled !== false;
-    $('fillDelaySlider').value = settings.fillDelay || 300;
-    $('fillDelayValue').textContent = settings.fillDelay || 300;
+    $('fillDelaySlider').value = settings.fillDelay ?? 150;
+    $('fillDelayValue').textContent = settings.fillDelay ?? 150;
     $('themeSelect').value = settings.theme || 'system';
   }
 
@@ -743,10 +986,8 @@
 
   // ─── Utility ───────────────────────────────────────────────────
   function escapeHtml(str) {
-    if (!str) return '';
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    if (str === undefined || str === null) return '';
+    return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
   // ─── Run ───────────────────────────────────────────────────────

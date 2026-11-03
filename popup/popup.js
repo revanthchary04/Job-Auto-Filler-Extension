@@ -1,7 +1,7 @@
 /**
  * OriginFill — Popup Logic
- * Handles all popup state transitions, profile switching, fill commands,
- * message handling, and stats display.
+ * Talks to the content script in the active tab (injecting it when needed), shows what it found,
+ * starts fills and restores, and displays progress and reports.
  *
  * @license AGPL-3.0
  * @author CharyWorld
@@ -27,12 +27,14 @@
     stateWelcome: $('stateWelcome'),
     stateNoForm: $('stateNoForm'),
     stateDetected: $('stateDetected'),
-    stateRecovery: $('stateRecovery'),
     stateFilling: $('stateFilling'),
     stateComplete: $('stateComplete'),
+    stateMessage: $('stateMessage'),
     // Welcome
     setupProfileBtn: $('setupProfileBtn'),
     // No Form
+    noFormText: $('noFormText'),
+    noFormSub: $('noFormSub'),
     goSettingsBtn: $('goSettingsBtn'),
     detectDemandBtn: $('detectDemandBtn'),
     // Detected
@@ -46,25 +48,41 @@
     fillSummaryText: $('fillSummaryText'),
     viewReportBtn: $('viewReportBtn'),
     // Recovery
+    recoveryBanner: $('recoveryBanner'),
     recoveryMeta: $('recoveryMeta'),
     restoreBtn: $('restoreBtn'),
     dismissRecoveryBtn: $('dismissRecoveryBtn'),
     // Filling
+    fillingTitle: $('fillingTitle'),
+    progressBar: $('progressBar'),
     progressFill: $('progressFill'),
     progressText: $('progressText'),
     fillingField: $('fillingField'),
+    cancelFillBtn: $('cancelFillBtn'),
     // Complete
+    completeIcon: $('completeIcon'),
+    completeTitle: $('completeTitle'),
     statSuccess: $('statSuccess'),
     statAttention: $('statAttention'),
     statFailed: $('statFailed'),
     completeTime: $('completeTime'),
     viewFullReportBtn: $('viewFullReportBtn'),
     fillAgainBtn: $('fillAgainBtn'),
+    // Message
+    messageIcon: $('messageIcon'),
+    messageTitle: $('messageTitle'),
+    messageText: $('messageText'),
+    messageActionBtn: $('messageActionBtn'),
+    messageBackBtn: $('messageBackBtn'),
     // Report
     fillReport: $('fillReport'),
     reportMeta: $('reportMeta'),
     reportBody: $('reportBody'),
     closeReportBtn: $('closeReportBtn'),
+    // Update waiting for a reload
+    updateBanner: $('updateBanner'),
+    updateMeta: $('updateMeta'),
+    reloadExtensionBtn: $('reloadExtensionBtn'),
     // Footer stats
     timeSavedValue: $('timeSavedValue'),
     recoveriesValue: $('recoveriesValue'),
@@ -73,60 +91,95 @@
 
   // ─── State ─────────────────────────────────────────────────────
 
-  let currentPortalInfo = null;
+  let activeTab = null;
+  let tabState = null;
   let currentReport = null;
   let profiles = [];
   let settings = {};
-  let stats = {};
+  let messageAction = null;
 
   // ─── Initialize ────────────────────────────────────────────────
 
   async function init() {
     try {
-      // Apply theme
       await applyTheme();
-
-      // Load profiles and settings
       await loadProfilesAndSettings();
+      loadStats();
+      checkForUpdatedFiles();
 
-      // If no profiles exist at all, show welcome/onboarding
-      if (profiles.length === 0) {
+      [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      if (!activeProfileHasData()) {
         showState('welcome');
         updateBadge('none', '👋', 'Profile setup needed');
         return;
       }
 
-      // Update fill button states
-      updateFillButtonStates();
-
-      // Get portal info from active tab
-      currentPortalInfo = await getPortalInfo();
-
-      if (currentPortalInfo && currentPortalInfo.portalType && currentPortalInfo.portalType !== 'none') {
-        // Portal detected — check for session recovery first
-        const recovery = await checkSessionRecovery();
-        if (recovery) {
-          showRecoveryState(recovery);
-        } else {
-          showDetectedState(currentPortalInfo);
-        }
-
-        // Show last fill report if available
-        if (currentPortalInfo.lastFillReport) {
-          showFillSummary(currentPortalInfo.lastFillReport);
-        }
-      } else {
-        showState('noForm');
-        updateBadge('none', '📋', 'No job form detected');
-      }
-
-      // Load and display stats
-      await loadStats();
-
+      await refreshTabState({ inject: isPortalUrl(activeTab?.url) });
     } catch (err) {
       console.error('[OriginFill Popup] Init error:', err);
-      showState('noForm');
-      updateBadge('none', '❌', 'Error loading extension');
+      showMessage('❌', 'Something went wrong', 'OriginFill could not load. Try reopening the popup.');
+    }
+  }
+
+  /**
+   * An unpacked install keeps running its old code after the folder is updated, until the
+   * extension is reloaded. Extension pages are read from disk, so compare the two versions.
+   */
+  async function checkForUpdatedFiles() {
+    try {
+      const running = chrome.runtime.getManifest().version;
+      const response = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
+      const onDisk = (await response.json()).version;
+      if (!onDisk || onDisk === running) return;
+      els.updateMeta.textContent = `Chrome is still running version ${running}; version ${onDisk} is in the OriginFill folder. After reloading, reload your job application tab too.`;
+      els.updateBanner.hidden = false;
+    } catch (e) { /* Store installs always match */ }
+  }
+
+  /**
+   * Ask the content script what's on the page; inject it first when allowed.
+   * @param {{ inject?: boolean }} [options]
+   */
+  async function refreshTabState({ inject = false } = {}) {
+    if (!activeTab) {
+      showNoForm();
+      return;
+    }
+
+    if (isRestrictedUrl(activeTab.url)) {
+      showNoForm('OriginFill can\'t run on this page.', 'Browser pages and the Chrome Web Store don\'t allow extensions. Open a job application to get started.', false);
+      return;
+    }
+
+    let state = await sendToTab({ type: OriginFillMessages.GET_STATE });
+    if (!state && inject) {
+      const injected = await chrome.runtime.sendMessage({ type: OriginFillMessages.INJECT_RUNTIME, data: { tabId: activeTab.id } });
+      if (injected && injected.ok) {
+        state = await sendToTab({ type: OriginFillMessages.GET_STATE });
+      } else if (isPortalUrl(activeTab.url)) {
+        showMessage('🔄', 'Reload this page', injected?.error || 'OriginFill needs the page to be reloaded once after installing or updating.', {
+          label: 'Reload page',
+          run: () => { chrome.tabs.reload(activeTab.id); window.close(); }
+        });
+        return;
+      }
+    }
+
+    tabState = state;
+
+    if (state && state.filling) {
+      showFilling('Filling form...');
+      return;
+    }
+
+    if (state && state.portalType && state.portalType !== OriginFillPortals.NONE) {
+      showDetectedState(state);
+      const report = state.lastFillReport ||
+        await chrome.runtime.sendMessage({ type: 'GET_LAST_REPORT', data: { tabId: activeTab.id } }).catch(() => null);
+      if (report && report.url === activeTab.url) showFillSummary(report);
+    } else {
+      showNoForm();
     }
   }
 
@@ -134,53 +187,77 @@
 
   /**
    * Show a specific state section, hiding all others.
-   * @param {'welcome'|'noForm'|'detected'|'recovery'|'filling'|'complete'} stateName
+   * @param {'welcome'|'noForm'|'detected'|'filling'|'complete'|'message'} stateName
    */
   function showState(stateName) {
-    const states = [
-      'stateWelcome', 'stateNoForm', 'stateDetected',
-      'stateRecovery', 'stateFilling', 'stateComplete'
-    ];
-
     const stateMap = {
       'welcome': 'stateWelcome',
       'noForm': 'stateNoForm',
       'detected': 'stateDetected',
-      'recovery': 'stateRecovery',
       'filling': 'stateFilling',
-      'complete': 'stateComplete'
+      'complete': 'stateComplete',
+      'message': 'stateMessage'
     };
 
-    states.forEach(s => {
+    Object.values(stateMap).forEach(s => {
       els[s].hidden = (s !== stateMap[stateName]);
     });
 
     // Hide report when changing states
-    if (stateName !== 'complete') {
+    if (stateName !== 'complete' && stateName !== 'detected') {
       els.fillReport.hidden = true;
     }
   }
 
-  // ─── Portal Detection ──────────────────────────────────────────
+  function showNoForm(text, sub, canTry = true) {
+    els.noFormText.textContent = text || 'No job application form detected on this page.';
+    els.noFormSub.textContent = sub || 'Open a Workday (or other) job application. If this page is one, you can still try filling it.';
+    els.detectDemandBtn.hidden = !canTry;
+    updateBadge('none', '📋', 'No job form detected');
+    showState('noForm');
+  }
 
   /**
-   * Get portal info from background service worker.
-   * @returns {Promise<Object>}
+   * Show an explanation with an optional action button.
    */
-  async function getPortalInfo() {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { type: 'GET_PORTAL_INFO' },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            resolve(null);
-            return;
-          }
-          resolve(response);
-        }
-      );
-    });
+  function showMessage(icon, title, text, action = null) {
+    els.messageIcon.textContent = icon;
+    els.messageTitle.textContent = title;
+    els.messageText.textContent = text;
+    messageAction = action;
+    els.messageActionBtn.hidden = !action;
+    if (action) els.messageActionBtn.textContent = action.label;
+    showState('message');
   }
+
+  // ─── Tab Messaging ─────────────────────────────────────────────
+
+  /**
+   * Send a message to the active tab's content script.
+   * @returns {Promise<any|null>} null when nothing is listening
+   */
+  async function sendToTab(message) {
+    if (!activeTab) return null;
+    try {
+      return await chrome.tabs.sendMessage(activeTab.id, message);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function isRestrictedUrl(url) {
+    if (!url) return false;
+    return /^(chrome|chrome-extension|edge|about|devtools|view-source):/.test(url) ||
+      url.startsWith('https://chromewebstore.google.com') ||
+      url.startsWith('https://chrome.google.com/webstore');
+  }
+
+  function isPortalUrl(url) {
+    if (!url) return true; // Unknown — try
+    return /^https?:/.test(url);
+  }
+
+  // ─── Detected State ────────────────────────────────────────────
 
   /**
    * Show the detected state with portal info.
@@ -188,87 +265,39 @@
    */
   function showDetectedState(info) {
     const portalName = getPortalDisplayName(info.portalType);
-    const isGeneric = info.portalType === 'generic';
 
-    // Update badge
-    if (isGeneric) {
-      updateBadge('warning', '⚠️', `${portalName} — Field matching may vary`);
+    if (info.portalType === OriginFillPortals.GENERIC) {
+      updateBadge('warning', '⚠️', `${portalName} — field matching may vary`);
     } else {
-      updateBadge('success', '✅', `${portalName} Detected`);
+      updateBadge('success', '✅', `${portalName} detected`);
     }
 
-    // Update page indicator
-    if (info.pageName) {
+    // Page indicator
+    if (info.portalType === OriginFillPortals.WORKDAY && info.isApplication === false) {
+      els.pageText.textContent = 'Job posting — click Apply, then Autofill each step';
+      els.pageIndicator.hidden = false;
+    } else if (info.pageName) {
       const pageNum = info.pageNumber || 1;
       const totalPages = info.totalPages || 1;
-      if (totalPages > 1) {
-        els.pageText.textContent = `Page ${pageNum} of ${totalPages} · ${info.pageName}`;
-      } else {
-        els.pageText.textContent = info.pageName;
-      }
+      els.pageText.textContent = totalPages > 1
+        ? `Step ${pageNum} of ${totalPages} · ${info.pageName}`
+        : info.pageName;
       els.pageIndicator.hidden = false;
     } else {
       els.pageIndicator.hidden = true;
     }
 
-    // Enable/disable fill buttons based on profile data
-    updateFillButtonStates();
-
-    showState('detected');
-  }
-
-  // ─── Session Recovery ──────────────────────────────────────────
-
-  /**
-   * Check for available session recovery data.
-   * @returns {Promise<Object|null>}
-   */
-  async function checkSessionRecovery() {
-    const result = await chrome.storage.local.get('originfill_session_recovery');
-    const recovery = result.originfill_session_recovery;
-
-    if (!recovery || !recovery.savedFields) return null;
-
-    // Check age — expire after 24 hours
-    const age = Date.now() - new Date(recovery.savedAt).getTime();
-    if (age > 24 * 60 * 60 * 1000) return null;
-
-    const fieldCount = Object.keys(recovery.savedFields || {}).length;
-    if (fieldCount === 0) return null;
-
-    // Validate domain
-    try {
-      const currentTab = await new Promise(resolve => {
-        chrome.tabs.query({ active: true, currentWindow: true }, tabs => resolve(tabs[0]));
-      });
-      if (currentTab && currentTab.url) {
-        const currentDomain = new URL(currentTab.url).hostname;
-        const recoveryDomain = new URL(recovery.lastUrl).hostname;
-        if (currentDomain !== recoveryDomain) {
-          return null; // Not matching
-        }
-      }
-    } catch(e) {
-      // url parse failed
+    // Session recovery offer
+    if (info.recovery && info.recovery.fieldCount > 0) {
+      const count = info.recovery.fieldCount;
+      els.recoveryMeta.textContent = `${count} field${count === 1 ? '' : 's'} saved ${getTimeAgo(new Date(info.recovery.savedAt))}${info.recovery.timedOut ? ' before your session expired' : ''}.`;
+      els.recoveryBanner.hidden = false;
+    } else {
+      els.recoveryBanner.hidden = true;
     }
 
-    return recovery;
-  }
-
-  /**
-   * Show the session recovery state.
-   * @param {Object} recovery
-   */
-  function showRecoveryState(recovery) {
-    updateBadge('warning', '⚠️', 'Session Recovered');
-
-    const fieldCount = Object.keys(recovery.savedFields).length;
-    const savedDate = new Date(recovery.savedAt);
-    const timeAgo = getTimeAgo(savedDate);
-
-    els.recoveryMeta.textContent = `${fieldCount} fields saved ${timeAgo}`;
-
-    showState('recovery');
+    els.fillSummary.hidden = true;
+    showState('detected');
   }
 
   // ─── Fill Commands ─────────────────────────────────────────────
@@ -278,73 +307,63 @@
    * @param {string} section - 'all', 'personal', 'education', 'workExperience'
    */
   async function sendFillCommand(section) {
-    showState('filling');
-    els.progressFill.style.width = '0%';
-    els.progressText.textContent = '0%';
-    els.fillingField.textContent = 'Preparing...';
-
-    const messageType = section === 'all' ? 'FILL_ALL' : 'FILL_SECTION';
-
-    // Get active tab and send fill command
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) {
-      showState('detected');
+    if (!activeProfileHasData()) {
+      showState('welcome');
       return;
     }
 
-    chrome.tabs.sendMessage(tab.id, {
-      type: messageType,
-      data: { section, fillDelay: settings.fillDelay || 300 }
+    showFilling('Filling form...');
+
+    let response = await sendToTab({
+      type: section === 'all' ? OriginFillMessages.FILL_ALL : OriginFillMessages.FILL_SECTION,
+      data: { section }
     });
+
+    if (!response) {
+      // Not injected yet (e.g. "Fill anyway" on an unknown site)
+      const injected = await chrome.runtime.sendMessage({ type: OriginFillMessages.INJECT_RUNTIME, data: { tabId: activeTab.id } });
+      if (injected && injected.ok) {
+        response = await sendToTab({ type: OriginFillMessages.FILL_ALL, data: { section } });
+      } else {
+        showMessage('🔄', 'Couldn\'t reach the page', injected?.error || 'Reload the page and try again.', {
+          label: 'Reload page',
+          run: () => { chrome.tabs.reload(activeTab.id); window.close(); }
+        });
+        return;
+      }
+    }
+
+    if (!response || !response.started) {
+      const reason = response?.reason;
+      if (reason === 'no_profile') {
+        showState('welcome');
+      } else if (reason === 'busy') {
+        showFilling('Already filling...');
+      } else {
+        showMessage('⚠️', 'Couldn\'t start', response?.error || 'OriginFill could not start filling this page.');
+      }
+    }
   }
 
   async function sendRestoreCommand() {
-    showState('filling');
-    els.fillingField.textContent = 'Restoring saved data...';
-    els.progressFill.style.width = '0%';
-    els.progressText.textContent = '0%';
-
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) {
-      showError('Unable to connect to OriginFill on this page.\n\nTry refreshing the application page and opening OriginFill again.');
-      return;
+    showFilling('Restoring saved answers...');
+    const response = await sendToTab({ type: OriginFillMessages.SESSION_RESTORE });
+    if (!response) {
+      showMessage('🔄', 'Couldn\'t reach the page', 'Reload the application page and open OriginFill again.');
     }
-
-    let responded = false;
-    const timeoutId = setTimeout(() => {
-      if (!responded) {
-        showError('Restore timed out. Some fields may not have been restored.');
-      }
-    }, 15000); // 15 seconds to at least start or fail
-
-    chrome.runtime.sendMessage({
-      type: 'SESSION_RESTORE',
-      tabId: tab.id
-    }, (response) => {
-      responded = true;
-      clearTimeout(timeoutId);
-      
-      if (chrome.runtime.lastError || !response || !response.success) {
-        showError('Unable to connect to OriginFill on this page.\n\nTry refreshing the application page and opening OriginFill again.');
-        return;
-      }
-      
-      // If success, we wait for FILL_PROGRESS and SESSION_RESTORED messages
-    });
   }
 
-  function showError(msg) {
-    showState('complete');
-    els.completeTime.textContent = '';
-    
-    els.statSuccess.textContent = '0';
-    els.statAttention.textContent = '0';
-    els.statFailed.textContent = '0';
-    
-    els.fillSummaryText.textContent = msg;
-    els.fillSummary.hidden = false;
-    els.viewFullReportBtn.hidden = true;
-    els.fillAgainBtn.textContent = 'Go Back';
+  function showFilling(title) {
+    els.fillingTitle.textContent = title;
+    setProgress(0);
+    els.fillingField.textContent = 'Preparing...';
+    showState('filling');
+  }
+
+  function setProgress(pct) {
+    els.progressFill.style.width = `${pct}%`;
+    els.progressText.textContent = `${pct}%`;
+    els.progressBar.setAttribute('aria-valuenow', String(pct));
   }
 
   // ─── Fill Progress & Complete ──────────────────────────────────
@@ -354,15 +373,12 @@
    * @param {Object} data - { current, total, fieldName, phase }
    */
   function updateFillProgress(data) {
-    if (data.phase === 'started') {
-      showState('filling');
-      return;
-    }
+    if (els.stateFilling.hidden) showFilling(data.phase === 'restore' ? 'Restoring saved answers...' : 'Filling form...');
+    if (data.phase === 'started') return;
 
     const pct = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
-    els.progressFill.style.width = `${pct}%`;
-    els.progressText.textContent = `${pct}%`;
-    els.fillingField.textContent = `Filling: ${data.fieldName || '...'}`;
+    setProgress(pct);
+    els.fillingField.textContent = data.fieldName ? `${data.phase === 'restore' ? 'Restoring' : 'Filling'}: ${data.fieldName}` : '...';
   }
 
   /**
@@ -372,27 +388,33 @@
   function showFillComplete(report) {
     currentReport = report;
 
+    if (report.status === 'no_profile') {
+      showState('welcome');
+      return;
+    }
+
     if (report.status === 'no_fields') {
-      showError(`No fields detected\n\nOriginFill detected ${getPortalDisplayName(report.portalType)}, but could not identify any fillable application fields on this page.\n\nRefresh the page or try again when the application form is loaded.`);
+      showMessage('🔍', 'No fields found', `OriginFill detected ${getPortalDisplayName(report.portalType)}, but couldn't find fillable fields on this page yet. If the form is still loading, wait a moment and try again.`);
       return;
     }
 
-    if (report.totalFields > 0 && report.successCount === 0 && report.failedCount === 0 && report.attentionCount === 0 && report.skippedCount > 0) {
-      showError(`No profile data available\n\nFields were detected, but no matching data was found in your profile to fill them.`);
+    if (report.status === 'nothing_to_restore') {
+      showMessage('🔄', 'Nothing to restore', 'There are no saved answers for this page.');
       return;
     }
 
+    const filled = (report.successCount || 0) + (report.attentionCount || 0);
+    els.completeIcon.textContent = report.failedCount > 0 ? '⚠️' : '✅';
+    els.completeTitle.textContent = filled > 0 ? `Filled ${filled} field${filled === 1 ? '' : 's'}` : 'Nothing was filled';
     els.statSuccess.textContent = report.successCount || 0;
     els.statAttention.textContent = report.attentionCount || 0;
     els.statFailed.textContent = report.failedCount || 0;
-    els.completeTime.textContent = `⏱ ${report.elapsedFormatted || ''}`;
-    
-    els.viewFullReportBtn.hidden = false;
-    els.fillSummary.hidden = true;
+    els.completeTime.textContent = filled === 0 && !(report.results && report.results.length)
+      ? 'No fields on this page were recognised. Turn on Debug logging in Settings to report the site.'
+      : (report.elapsedFormatted ? `⏱ ${report.elapsedFormatted}` : '');
+    els.viewFullReportBtn.hidden = !(report.results && report.results.length);
 
     showState('complete');
-
-    // Refresh stats
     loadStats();
   }
 
@@ -402,12 +424,12 @@
    */
   function showFillSummary(report) {
     currentReport = report;
+    if (!report.results || report.results.length === 0) return;
 
-    const text = report.failedCount > 0
-      ? `Last fill: ${report.failedCount} fields failed`
-      : `Last fill: ${report.successCount} fields ✅`;
-
-    els.fillSummaryText.textContent = text;
+    const filled = (report.successCount || 0) + (report.attentionCount || 0);
+    els.fillSummaryText.textContent = report.failedCount > 0
+      ? `Last fill: ${filled} filled, ${report.failedCount} failed`
+      : `Last fill: ${filled} fields ✅`;
     els.fillSummary.hidden = false;
   }
 
@@ -420,31 +442,20 @@
   function renderReport(report) {
     if (!report) return;
 
-    els.reportMeta.textContent = `${report.portalName} · ${new Date(report.timestamp).toLocaleString()} · ${report.elapsedFormatted}`;
+    const when = report.timestamp ? new Date(report.timestamp).toLocaleString() : '';
+    els.reportMeta.textContent = [report.portalName, report.pageName, when, report.elapsedFormatted].filter(Boolean).join(' · ');
 
-    let html = '';
+    const sections = [
+      ['✅ Filled', 'success', report.successResults],
+      ['⚠️ Please check', 'attention', report.attentionResults],
+      ['❌ Failed', 'failed', report.failedResults],
+      ['⏭ Fill yourself', 'skipped', report.skippedResults]
+    ];
 
-    // Success section
-    if (report.successResults && report.successResults.length > 0) {
-      html += renderReportSection('✅ Filled Successfully', 'success', report.successResults);
-    }
-
-    // Attention section
-    if (report.attentionResults && report.attentionResults.length > 0) {
-      html += renderReportSection('⚠️ Needs Attention', 'attention', report.attentionResults);
-    }
-
-    // Failed section
-    if (report.failedResults && report.failedResults.length > 0) {
-      html += renderReportSection('❌ Failed', 'failed', report.failedResults);
-    }
-
-    // Skipped section
-    if (report.skippedResults && report.skippedResults.length > 0) {
-      html += renderReportSection('⏭ Skipped', 'skipped', report.skippedResults);
-    }
-
-    els.reportBody.innerHTML = html;
+    els.reportBody.textContent = '';
+    sections.forEach(([title, type, results]) => {
+      if (results && results.length) els.reportBody.appendChild(renderReportSection(title, type, results));
+    });
     els.fillReport.hidden = false;
   }
 
@@ -452,22 +463,34 @@
    * Render a single report section.
    */
   function renderReportSection(title, type, results) {
-    const items = results.map(r => `
-      <div class="popup__report-item">
-        <span class="popup__report-field">${escapeHtml(r.field)}</span>
-        <span class="popup__report-value">${escapeHtml(r.value || '—')}</span>
-        ${r.note ? `<span class="popup__report-note">${escapeHtml(r.note)}</span>` : ''}
-      </div>
-    `).join('');
+    const section = document.createElement('div');
+    section.className = 'popup__report-section';
 
-    return `
-      <div class="popup__report-section">
-        <div class="popup__report-section-title popup__report-section-title--${type}">
-          ${title} (${results.length})
-        </div>
-        ${items}
-      </div>
-    `;
+    const heading = document.createElement('div');
+    heading.className = `popup__report-section-title popup__report-section-title--${type}`;
+    heading.textContent = `${title} (${results.length})`;
+    section.appendChild(heading);
+
+    results.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'popup__report-item';
+      const field = document.createElement('span');
+      field.className = 'popup__report-field';
+      field.textContent = r.field;
+      const value = document.createElement('span');
+      value.className = 'popup__report-value';
+      value.textContent = r.value || '—';
+      item.append(field, value);
+      if (r.note) {
+        const note = document.createElement('span');
+        note.className = 'popup__report-note';
+        note.textContent = r.note;
+        item.appendChild(note);
+      }
+      section.appendChild(item);
+    });
+
+    return section;
   }
 
   // ─── Profile & Settings ────────────────────────────────────────
@@ -477,147 +500,60 @@
    */
   async function loadProfilesAndSettings() {
     try {
-      // 1. Query chrome.storage.local for both namespaced and plain keys
-      const data = await chrome.storage.local.get([
-        'profiles',
-        'settings',
-        'originfill_profiles',
-        'originfill_settings',
-        'originfill_first_run'
-      ]);
-
-      settings = data.settings || data.originfill_settings || {};
-
-      // 2. Try loading profiles through OriginFillStore
-      profiles = [];
-      if (typeof OriginFillStore !== 'undefined' && OriginFillStore.getProfiles) {
-        try {
-          profiles = await OriginFillStore.getProfiles();
-        } catch (e) {
-          console.warn('[OriginFill Popup] OriginFillStore.getProfiles warning:', e);
-        }
-      }
-
-      // 3. Fallback to direct chrome.storage.local keys
-      if (!profiles || profiles.length === 0) {
-        if (Array.isArray(data.profiles) && data.profiles.length > 0) {
-          profiles = data.profiles;
-        } else if (Array.isArray(data.originfill_profiles) && data.originfill_profiles.length > 0) {
-          profiles = data.originfill_profiles;
-        } else if (data.originfill_profiles && typeof OriginFillEncryption !== 'undefined') {
-          try {
-            await OriginFillEncryption.initializeKey();
-            const decrypted = await OriginFillEncryption.decryptObject(data.originfill_profiles);
-            if (Array.isArray(decrypted)) {
-              profiles = decrypted;
-            }
-          } catch (e) {
-            console.warn('[OriginFill Popup] Decryption fallback warning:', e);
-          }
-        }
-      }
-
-      if (!profiles) profiles = [];
-
-      // If profiles are found, mark first-run completed
-      if (profiles.length > 0 && data.originfill_first_run) {
-        await chrome.storage.local.set({ originfill_first_run: false });
-      }
-
-      console.log(`[OriginFill Popup] Profiles count: ${profiles.length}, Active profile ID: ${settings.activeProfileId || '(none)'}`);
-
-      // Populate profile selector
-      populateProfileSelector();
-
-      return profiles;
+      settings = await OriginFillStore.getSettings();
+      profiles = await OriginFillStore.getProfiles();
     } catch (err) {
       console.error('[OriginFill Popup] Failed to load data:', err);
       profiles = [];
-      settings = {};
-      return [];
+      settings = { ...OriginFillDefaultSettings };
     }
+    populateProfileSelector();
+  }
+
+  function getActiveProfile() {
+    return profiles.find(p => p.id === settings.activeProfileId) ||
+      profiles.find(p => p.isDefault) || profiles[0] || null;
+  }
+
+  function activeProfileHasData() {
+    const p = getActiveProfile()?.personal;
+    return !!(p && (p.firstName || p.lastName || p.email));
   }
 
   /**
    * Populate the profile dropdown.
    */
   function populateProfileSelector() {
-    els.profileSelect.innerHTML = '';
+    els.profileSelect.textContent = '';
 
     if (profiles.length === 0) {
-      els.profileSelect.innerHTML = '<option value="">No profiles</option>';
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'No profiles';
+      els.profileSelect.appendChild(option);
       return;
     }
 
+    const active = getActiveProfile();
     profiles.forEach(p => {
       const option = document.createElement('option');
       option.value = p.id;
       option.textContent = p.label;
-      option.selected = (p.id === settings.activeProfileId) || p.isDefault;
+      option.selected = active && p.id === active.id;
       els.profileSelect.appendChild(option);
     });
-  }
-
-  /**
-   * Check if the active profile is empty (needs setup).
-   * @returns {Promise<boolean>}
-   */
-  async function isProfileEmpty() {
-    if (profiles.length === 0) return true;
-
-    const activeId = settings.activeProfileId;
-    const active = profiles.find(p => p.id === activeId) || profiles[0];
-
-    if (!active) return true;
-
-    // Check if at least first name and email are filled
-    return !active.personal?.firstName && !active.personal?.email;
-  }
-
-  /**
-   * Check if this is the first run.
-   * @returns {Promise<boolean>}
-   */
-  async function checkFirstRun() {
-    const result = await chrome.storage.local.get('originfill_first_run');
-    return result.originfill_first_run === true;
-  }
-
-  /**
-   * Update fill button states based on profile data.
-   */
-  function updateFillButtonStates() {
-    const isEmpty = profiles.length === 0;
-
-    els.fillAllBtn.disabled = isEmpty;
-    els.fillPersonalBtn.disabled = isEmpty;
-    els.fillEducationBtn.disabled = isEmpty;
-    els.fillWorkBtn.disabled = isEmpty;
-
-    if (isEmpty) {
-      els.fillAllBtn.title = 'Set up a profile first';
-    }
   }
 
   // ─── Stats ─────────────────────────────────────────────────────
 
   async function loadStats() {
     try {
-      const result = await chrome.storage.local.get('originfill_stats');
-      stats = result.originfill_stats || {};
+      const stats = await OriginFillStore.getStats();
 
-      // Format time saved
-      const minutes = stats.totalTimeSavedMinutes || 0;
-      if (minutes >= 60) {
-        const hours = (minutes / 60).toFixed(1);
-        els.timeSavedValue.textContent = `${hours}h`;
-      } else {
-        els.timeSavedValue.textContent = `${minutes} min`;
-      }
-
+      const minutes = Math.round(stats.totalTimeSavedMinutes || 0);
+      els.timeSavedValue.textContent = minutes >= 60 ? `${(minutes / 60).toFixed(1)}h` : `${minutes} min`;
       els.recoveriesValue.textContent = stats.totalRecoveries || 0;
       els.fillCountValue.textContent = stats.totalFills || 0;
-
     } catch (err) {
       console.error('[OriginFill Popup] Stats load error:', err);
     }
@@ -626,13 +562,9 @@
   // ─── Theme ─────────────────────────────────────────────────────
 
   async function applyTheme() {
-    const result = await chrome.storage.local.get('originfill_settings');
-    const s = result.originfill_settings || {};
-
-    if (s.theme === 'dark') {
-      document.documentElement.setAttribute('data-theme', 'dark');
-    } else if (s.theme === 'light') {
-      document.documentElement.setAttribute('data-theme', 'light');
+    const s = await OriginFillStore.getSettings();
+    if (s.theme === 'dark' || s.theme === 'light') {
+      document.documentElement.setAttribute('data-theme', s.theme);
     }
     // 'system' = no data-theme attribute, CSS media query handles it
   }
@@ -653,94 +585,37 @@
 
   // ─── Event Listeners ──────────────────────────────────────────
 
-  // Settings button
-  els.settingsBtn.addEventListener('click', () => {
-    chrome.runtime.openOptionsPage();
-  });
+  const openSettings = (section) => {
+    chrome.runtime.sendMessage({ type: OriginFillMessages.OPEN_SETTINGS, data: { section } });
+    window.close();
+  };
 
-  // Setup profile (welcome state)
-  els.setupProfileBtn.addEventListener('click', () => {
-    chrome.runtime.openOptionsPage();
-  });
-
-  // Go to settings (no form state)
-  els.goSettingsBtn.addEventListener('click', () => {
-    chrome.runtime.openOptionsPage();
-  });
+  els.settingsBtn.addEventListener('click', () => openSettings(''));
+  els.reloadExtensionBtn.addEventListener('click', () => chrome.runtime.reload());
+  els.setupProfileBtn.addEventListener('click', () => openSettings('personal'));
+  els.goSettingsBtn.addEventListener('click', () => openSettings(''));
 
   // Profile switcher
   els.profileSelect.addEventListener('change', async () => {
     const newId = els.profileSelect.value;
-    if (newId) {
-      settings.activeProfileId = newId;
-      await chrome.storage.local.set({
-        originfill_settings: settings,
-        settings: settings
-      });
-
-      // Notify content scripts
-      chrome.runtime.sendMessage({
-        type: 'PROFILE_UPDATED',
-        data: { activeProfileId: newId }
-      });
-    }
+    if (!newId) return;
+    await OriginFillStore.setActiveProfile(newId);
+    settings.activeProfileId = newId;
+    if (!activeProfileHasData()) showState('welcome');
+    else if (tabState && tabState.portalType !== OriginFillPortals.NONE) showDetectedState(tabState);
   });
 
   // Real-time synchronization when settings or profiles change in settings page
   chrome.storage.onChanged.addListener(async (changes, areaName) => {
     if (areaName !== 'local') return;
-    if (
-      changes.profiles ||
-      changes.originfill_profiles ||
-      changes.settings ||
-      changes.originfill_settings
-    ) {
-      console.log('[OriginFill Popup] Storage update detected, refreshing popup...');
+    if (changes[OriginFillStorageKeys.PROFILES] || changes[OriginFillStorageKeys.SETTINGS]) {
       await loadProfilesAndSettings();
-      if (profiles.length === 0) {
-        showState('welcome');
-      } else if (currentPortalInfo && currentPortalInfo.portalType && currentPortalInfo.portalType !== 'none') {
-        showDetectedState(currentPortalInfo);
-      } else {
-        showState('noForm');
-      }
-      updateFillButtonStates();
     }
+    if (changes[OriginFillStorageKeys.STATS]) loadStats();
   });
 
-  // Detect on demand
-  if (els.detectDemandBtn) {
-    els.detectDemandBtn.addEventListener('click', () => {
-      els.detectDemandBtn.disabled = true;
-      els.detectDemandBtn.innerHTML = '<span class="popup__btn-icon">⏳</span>Detecting...';
-      
-      chrome.runtime.sendMessage({ type: 'DETECT_ON_DEMAND' }, (response) => {
-        els.detectDemandBtn.disabled = false;
-        els.detectDemandBtn.innerHTML = '<span class="popup__btn-icon">🔍</span>Detect on this page';
-        
-        if (chrome.runtime.lastError) {
-          console.error('[OriginFill] Detection error:', chrome.runtime.lastError);
-          return;
-        }
-        
-        if (response && response.type && response.type !== 'none') {
-          currentPortalInfo = {
-            portalType: response.type,
-            confidence: response.confidence,
-            pageName: response.pageName,
-            url: response.url
-          };
-          showDetectedState(currentPortalInfo);
-        } else {
-          // Temporarily show a "not found" state on the button
-          els.detectDemandBtn.innerHTML = '<span class="popup__btn-icon">❌</span>No fields found';
-          setTimeout(() => {
-            els.detectDemandBtn.innerHTML = '<span class="popup__btn-icon">🔍</span>Detect on this page';
-          }, 3000);
-        }
-      });
-    });
-  }
+  // Fill on a page we didn't recognise
+  els.detectDemandBtn.addEventListener('click', () => sendFillCommand('all'));
 
   // Fill all
   els.fillAllBtn.addEventListener('click', () => sendFillCommand('all'));
@@ -750,17 +625,16 @@
   els.fillEducationBtn.addEventListener('click', () => sendFillCommand('education'));
   els.fillWorkBtn.addEventListener('click', () => sendFillCommand('workExperience'));
 
+  // Stop
+  els.cancelFillBtn.addEventListener('click', () => sendToTab({ type: OriginFillMessages.CANCEL_FILL }));
+
   // Session restore
   els.restoreBtn.addEventListener('click', () => sendRestoreCommand());
 
   // Dismiss recovery
   els.dismissRecoveryBtn.addEventListener('click', async () => {
-    await chrome.storage.local.remove('originfill_session_recovery');
-    if (currentPortalInfo && currentPortalInfo.portalType !== 'none') {
-      showDetectedState(currentPortalInfo);
-    } else {
-      showState('noForm');
-    }
+    await chrome.storage.local.remove(OriginFillStorageKeys.SESSION_RECOVERY);
+    els.recoveryBanner.hidden = true;
   });
 
   // View report buttons
@@ -772,42 +646,34 @@
     els.fillReport.hidden = true;
   });
 
-  // Fill again
-  els.fillAgainBtn.addEventListener('click', () => {
-    if (currentPortalInfo && currentPortalInfo.portalType !== 'none') {
-      showDetectedState(currentPortalInfo);
-    }
-  });
+  // Fill again / back
+  els.fillAgainBtn.addEventListener('click', () => refreshTabState());
+  els.messageBackBtn.addEventListener('click', () => refreshTabState());
+  els.messageActionBtn.addEventListener('click', () => messageAction && messageAction.run());
 
   // ─── Message Listener ─────────────────────────────────────────
 
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, sender) => {
+    // Only listen to the tab this popup belongs to
+    if (!sender.tab || !activeTab || sender.tab.id !== activeTab.id) return;
     const { type, data } = message;
 
     switch (type) {
-      case 'FILL_PROGRESS':
+      case OriginFillMessages.FILL_PROGRESS:
         updateFillProgress(data);
         break;
 
-      case 'FILL_COMPLETE':
+      case OriginFillMessages.FILL_COMPLETE:
+      case OriginFillMessages.FILL_ERROR:
+      case OriginFillMessages.SESSION_RESTORED:
         showFillComplete(data);
         break;
 
-      case 'FILL_ERROR':
-        showFillComplete(data);
-        break;
-
-      case 'PAGE_CHANGED':
-        if (data.pageName && currentPortalInfo) {
-          currentPortalInfo.pageName = data.pageName;
-          currentPortalInfo.pageNumber = data.pageNumber;
-          currentPortalInfo.totalPages = data.totalPages;
-          showDetectedState(currentPortalInfo);
+      case OriginFillMessages.PAGE_CHANGED:
+        if (data.pageName && tabState && els.stateFilling.hidden && els.stateComplete.hidden) {
+          tabState = { ...tabState, ...data };
+          showDetectedState(tabState);
         }
-        break;
-
-      case 'SESSION_RESTORED':
-        showFillComplete(data);
         break;
     }
   });
@@ -821,10 +687,10 @@
       lever: 'Lever',
       icims: 'iCIMS',
       taleo: 'Taleo',
-      generic: 'Generic Portal',
-      none: 'No Portal'
+      generic: 'Job form',
+      none: 'No portal'
     };
-    return names[type] || 'Unknown';
+    return names[type] || 'Job form';
   }
 
   function getTimeAgo(date) {
@@ -833,13 +699,6 @@
     if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
     return `${Math.floor(seconds / 86400)} days ago`;
-  }
-
-  function escapeHtml(str) {
-    if (!str) return '';
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
   }
 
   // ─── Initialize ────────────────────────────────────────────────

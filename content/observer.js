@@ -1,30 +1,29 @@
 /**
  * OriginFill — Multi-Page Form Observer
- * Watches for SPA navigation and new form sections appearing.
- * Detects page transitions in Workday's multi-step application flow.
- * Intercepts pushState/replaceState/popstate/hashchange for reliable SPA tracking.
+ * Watches for SPA navigation and new form sections appearing, e.g. Workday moving from
+ * "My Information" to "My Experience" without a page load.
+ *
+ * Content scripts run in an isolated world, so wrapping history.pushState here would never see
+ * the page's own calls. Instead every (debounced) DOM change re-checks the URL and current step.
  *
  * @license AGPL-3.0
  * @author CharyWorld
  */
 
-const OriginFillObserver = (() => {
+var OriginFillObserver = (() => {
   'use strict';
 
   /** @type {MutationObserver|null} */
   let _observer = null;
 
-  /** @type {number} Debounce timer ID */
+  /** @type {number|null} Debounce timer ID */
   let _debounceTimer = null;
 
-  /** @type {string} Last detected page/section name */
-  let _lastPageName = '';
+  /** @type {string} Key of the current page/step (URL + step name) */
+  let _lastPageKey = '';
 
-  /** @type {string} Last URL hash */
-  let _lastHash = '';
-
-  /** @type {string} Last full URL */
-  let _lastUrl = '';
+  /** @type {Object|null} Last page info sent out */
+  let _lastPageInfo = null;
 
   /** @type {number} Last known form field count */
   let _lastFieldCount = 0;
@@ -32,19 +31,17 @@ const OriginFillObserver = (() => {
   /** @type {boolean} Observer is active */
   let _active = false;
 
-  /** @type {Object} Track fill state per page */
-  let _pageStates = {};
+  /** @type {Set<string>} Pages already auto-filled */
+  const _autoFilledPages = new Set();
 
   /** @type {Object} Stored options reference for dynamic updates */
   let _options = {
     onPageChange: () => {},
+    onAutoFill: null,
     autoFillOnChange: false,
     profile: null,
     portalType: OriginFillPortals.GENERIC
   };
-
-  /** @type {boolean} Whether history interceptors are installed */
-  let _historyIntercepted = false;
 
   // ─── Observer Setup ────────────────────────────────────────────
 
@@ -52,9 +49,10 @@ const OriginFillObserver = (() => {
    * Start observing the page for multi-step form changes.
    *
    * @param {Object} [options]
-   * @param {Function} [options.onPageChange] - Callback when page change detected
-   * @param {boolean} [options.autoFillOnChange] - Auto-fill new fields on page change
-   * @param {Object} [options.profile] - Active profile for auto-fill
+   * @param {Function} [options.onPageChange] - Callback(pageInfo) when the page/step changes
+   * @param {Function} [options.onAutoFill] - Callback(pageInfo) to fill a new page when auto-fill is on
+   * @param {boolean} [options.autoFillOnChange] - Auto-fill new pages
+   * @param {Object} [options.profile] - Active profile
    * @param {string} [options.portalType] - Detected portal type
    */
   function start(options = {}) {
@@ -65,55 +63,29 @@ const OriginFillObserver = (() => {
 
     _options = {
       onPageChange: options.onPageChange || (() => {}),
+      onAutoFill: options.onAutoFill || null,
       autoFillOnChange: options.autoFillOnChange || false,
       profile: options.profile || null,
       portalType: options.portalType || OriginFillPortals.GENERIC
     };
 
-    // Record initial state
-    _lastHash = window.location.hash;
-    _lastUrl = window.location.href;
-    _lastPageName = detectCurrentPage(_options.portalType);
-    _lastFieldCount = countFormFields();
-
-    // Listen for URL hash changes
-    window.addEventListener('hashchange', handleHashChange);
-
-    // Listen for popstate (SPA back/forward navigation)
-    window.addEventListener('popstate', handlePopState);
-
-    // Intercept pushState and replaceState for SPA navigation
-    interceptHistoryMethods();
-
-    // Set up MutationObserver
-    _observer = new MutationObserver((mutations) => {
-      // Debounce rapid DOM changes
-      if (_debounceTimer) {
-        clearTimeout(_debounceTimer);
-      }
-
-      _debounceTimer = setTimeout(() => {
-        handleDOMMutation(mutations);
-      }, OriginFillTiming.OBSERVER_DEBOUNCE);
+    _observer = new MutationObserver(() => {
+      if (_debounceTimer) clearTimeout(_debounceTimer);
+      _debounceTimer = setTimeout(checkForPageChange, OriginFillTiming.OBSERVER_DEBOUNCE);
     });
 
     _observer.observe(document.body, {
       childList: true,
-      subtree: true,
-      attributes: false,
-      characterData: false
+      subtree: true
     });
+
+    window.addEventListener('popstate', checkForPageChange);
+    window.addEventListener('hashchange', checkForPageChange);
 
     _active = true;
     OriginFillLogger.info('Multi-page observer started');
 
-    // Send initial page info
-    sendMessage(OriginFillMessages.PAGE_CHANGED, {
-      pageName: _lastPageName,
-      pageNumber: getPageNumber(_options.portalType),
-      totalPages: getTotalPages(_options.portalType),
-      fieldCount: _lastFieldCount
-    });
+    checkForPageChange();
   }
 
   /**
@@ -130,213 +102,61 @@ const OriginFillObserver = (() => {
       _debounceTimer = null;
     }
 
-    window.removeEventListener('hashchange', handleHashChange);
-    window.removeEventListener('popstate', handlePopState);
-
-    // Restore original history methods
-    restoreHistoryMethods();
+    window.removeEventListener('popstate', checkForPageChange);
+    window.removeEventListener('hashchange', checkForPageChange);
 
     _active = false;
     OriginFillLogger.info('Multi-page observer stopped');
   }
 
-  // ─── History Interception ──────────────────────────────────────
-
-  /** @type {Function|null} Original pushState */
-  let _origPushState = null;
-
-  /** @type {Function|null} Original replaceState */
-  let _origReplaceState = null;
+  // ─── Change Detection ──────────────────────────────────────────
 
   /**
-   * Intercept history.pushState and history.replaceState to detect SPA navigation.
-   * This is necessary because popstate only fires on back/forward, not on programmatic pushState.
+   * Compare the current URL/step with the last one and react to changes.
    */
-  function interceptHistoryMethods() {
-    if (_historyIntercepted) return;
+  function checkForPageChange() {
+    const pageInfo = getPageInfo(_options.portalType);
+    const pageKey = `${window.location.origin}${window.location.pathname}#${pageInfo.pageName}`;
+    const fieldCountChanged = Math.abs(pageInfo.fieldCount - _lastFieldCount) >= 3;
 
-    _origPushState = history.pushState;
-    _origReplaceState = history.replaceState;
+    if (pageKey === _lastPageKey && !fieldCountChanged) return;
 
-    history.pushState = function(...args) {
-      _origPushState.apply(this, args);
-      onHistoryChange('pushState');
-    };
+    const isNewPage = pageKey !== _lastPageKey;
+    _lastPageKey = pageKey;
+    _lastFieldCount = pageInfo.fieldCount;
+    _lastPageInfo = pageInfo;
 
-    history.replaceState = function(...args) {
-      _origReplaceState.apply(this, args);
-      onHistoryChange('replaceState');
-    };
-
-    _historyIntercepted = true;
-    OriginFillLogger.debug('History methods intercepted');
-  }
-
-  /**
-   * Restore original history methods on stop.
-   */
-  function restoreHistoryMethods() {
-    if (!_historyIntercepted) return;
-
-    if (_origPushState) {
-      history.pushState = _origPushState;
-      _origPushState = null;
-    }
-    if (_origReplaceState) {
-      history.replaceState = _origReplaceState;
-      _origReplaceState = null;
+    if (isNewPage) {
+      OriginFillLogger.info(`Page change detected: "${pageInfo.pageName}"`);
+      sendMessage(OriginFillMessages.PAGE_CHANGED, pageInfo);
     }
 
-    _historyIntercepted = false;
-    OriginFillLogger.debug('History methods restored');
-  }
+    _options.onPageChange(pageInfo, { isNewPage });
 
-  /**
-   * Called when pushState or replaceState is invoked.
-   * @param {string} source - 'pushState' or 'replaceState'
-   */
-  function onHistoryChange(source) {
-    const newUrl = window.location.href;
-    if (newUrl !== _lastUrl) {
-      OriginFillLogger.debug(`${source} detected: ${_lastUrl} → ${newUrl}`);
-      _lastUrl = newUrl;
-      _lastHash = window.location.hash;
-
-      // Delay slightly to let DOM update after history change
+    // Auto-fill once per page, after the fields have rendered
+    if (_options.autoFillOnChange && _options.onAutoFill && pageInfo.fieldCount > 0 && !_autoFilledPages.has(pageKey)) {
+      _autoFilledPages.add(pageKey);
       setTimeout(() => {
-        triggerPageTransition();
-      }, 200);
-    }
-  }
-
-  // ─── Change Detection Handlers ─────────────────────────────────
-
-  /**
-   * Handle URL hash changes (Workday uses #step=N patterns).
-   * Fixed: Now calls handlePageTransition directly instead of being a no-op.
-   */
-  function handleHashChange() {
-    const newHash = window.location.hash;
-    if (newHash !== _lastHash) {
-      OriginFillLogger.debug(`Hash changed: ${_lastHash} → ${newHash}`);
-      _lastHash = newHash;
-      _lastUrl = window.location.href;
-      triggerPageTransition();
+        if (!OriginFillFiller.isFilling()) _options.onAutoFill(pageInfo);
+      }, 800);
     }
   }
 
   /**
-   * Handle popstate events (browser back/forward).
-   */
-  function handlePopState() {
-    _lastUrl = window.location.href;
-    _lastHash = window.location.hash;
-    triggerPageTransition();
-  }
-
-  /**
-   * Handle DOM mutations that might indicate a page change.
-   * @param {MutationRecord[]} mutations
-   */
-  function handleDOMMutation(mutations) {
-    // Check if significant DOM changes occurred
-    let significantChange = false;
-
-    for (const mutation of mutations) {
-      if (mutation.addedNodes.length > 0) {
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            // Check if new form elements appeared
-            if (node.tagName === 'FORM' ||
-                node.querySelector?.('input, select, textarea, [data-automation-id]')) {
-              significantChange = true;
-              break;
-            }
-
-            // Check for new section containers
-            if (node.querySelector?.('[role="group"], fieldset, [class*="section"]')) {
-              significantChange = true;
-              break;
-            }
-          }
-        }
-      }
-
-      if (significantChange) break;
-    }
-
-    if (significantChange) {
-      triggerPageTransition();
-    }
-  }
-
-  /**
-   * Trigger a page transition check using current options.
-   * Centralized handler that all navigation events funnel through.
-   */
-  function triggerPageTransition() {
-    handlePageTransition(
-      _options.onPageChange,
-      _options.autoFillOnChange,
-      _options.profile,
-      _options.portalType
-    );
-  }
-
-  /**
-   * Handle a detected page transition.
-   *
-   * @param {Function} onPageChange
-   * @param {boolean} autoFillOnChange
-   * @param {Object} profile
+   * Describe the current page.
    * @param {string} portalType
+   * @returns {{ pageName: string, pageNumber: number, totalPages: number, fieldCount: number, url: string }}
    */
-  function handlePageTransition(onPageChange, autoFillOnChange, profile, portalType) {
-    const currentPage = detectCurrentPage(portalType);
-    const currentFieldCount = countFormFields();
+  function getPageInfo(portalType) {
+    const step = portalType === OriginFillPortals.WORKDAY
+      ? OriginFillDetector.getWorkdayStep()
+      : { pageName: detectCurrentPage(portalType), pageNumber: 1, totalPages: 1 };
 
-    // Only trigger if page actually changed
-    if (currentPage === _lastPageName && currentFieldCount === _lastFieldCount) {
-      return;
-    }
-
-    OriginFillLogger.info(`Page change detected: "${_lastPageName}" → "${currentPage}"`);
-
-    _lastPageName = currentPage;
-    _lastFieldCount = currentFieldCount;
-
-    const pageInfo = {
-      pageName: currentPage,
-      pageNumber: getPageNumber(portalType),
-      totalPages: getTotalPages(portalType),
-      fieldCount: currentFieldCount
+    return {
+      ...step,
+      fieldCount: countFormFields(),
+      url: window.location.href
     };
-
-    // Notify popup and background
-    sendMessage(OriginFillMessages.PAGE_CHANGED, pageInfo);
-
-    // Call user callback
-    onPageChange(pageInfo);
-
-    // Auto-fill if enabled
-    if (autoFillOnChange && profile) {
-      OriginFillLogger.info(`Auto-filling new page: ${currentPage}`);
-
-      // Small delay to let fields fully render
-      setTimeout(async () => {
-        const report = await OriginFillFiller.fillAll(profile, portalType, {
-          section: OriginFillSections.ALL,
-          fillDelay: OriginFillTiming.FILL_DELAY_DEFAULT
-        });
-
-        // Track page state
-        _pageStates[currentPage] = {
-          filled: true,
-          report,
-          timestamp: Date.now()
-        };
-      }, 500);
-    }
   }
 
   // ─── Profile Update Propagation ────────────────────────────────
@@ -379,7 +199,7 @@ const OriginFillObserver = (() => {
    */
   function detectCurrentPage(portalType) {
     if (portalType === OriginFillPortals.WORKDAY) {
-      return OriginFillDetector.detectWorkdayPage();
+      return OriginFillDetector.getWorkdayStep().pageName;
     }
 
     // Generic: use heading text or URL
@@ -405,27 +225,7 @@ const OriginFillObserver = (() => {
    * @returns {number}
    */
   function getPageNumber(portalType) {
-    if (portalType === OriginFillPortals.WORKDAY) {
-      // Check URL hash for step number
-      const hash = window.location.hash;
-      const match = hash.match(/step[=:]?(\d+)/i);
-      if (match) return parseInt(match[1], 10);
-
-      // Check progress indicators
-      const activeStep = document.querySelector(
-        '[data-automation-id="progressBar"] .active, ' +
-        '.css-progress-active, ' +
-        '[aria-current="step"]'
-      );
-      if (activeStep) {
-        const siblings = activeStep.parentElement?.children;
-        if (siblings) {
-          return Array.from(siblings).indexOf(activeStep) + 1;
-        }
-      }
-    }
-
-    return 1;
+    return portalType === OriginFillPortals.WORKDAY ? OriginFillDetector.getWorkdayStep().pageNumber : 1;
   }
 
   /**
@@ -434,16 +234,7 @@ const OriginFillObserver = (() => {
    * @returns {number}
    */
   function getTotalPages(portalType) {
-    if (portalType === OriginFillPortals.WORKDAY) {
-      const progressSteps = document.querySelectorAll(
-        '[data-automation-id="progressBar"] > *, ' +
-        '.css-progress-step, ' +
-        '[role="progressbar"] > *'
-      );
-      if (progressSteps.length > 0) return progressSteps.length;
-    }
-
-    return 1; // Unknown
+    return portalType === OriginFillPortals.WORKDAY ? OriginFillDetector.getWorkdayStep().totalPages : 1;
   }
 
   /**
@@ -452,29 +243,23 @@ const OriginFillObserver = (() => {
    */
   function countFormFields() {
     const fields = document.querySelectorAll(
-      'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea'
+      'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), select, textarea, button[aria-haspopup="listbox"], ' +
+      '[data-automation-id="file-upload-drop-zone"]'
     );
 
-    return Array.from(fields).filter(f => OriginFillDetector.isVisible(f)).length;
+    let count = 0;
+    fields.forEach(f => {
+      if (!f.closest('[data-originfill-ui]') && OriginFillDetector.isVisible(f)) count++;
+    });
+    return count;
   }
 
-  // ─── Page State ────────────────────────────────────────────────
-
   /**
-   * Get fill state for a specific page.
-   * @param {string} pageName
+   * The last page info (for popup state queries).
    * @returns {Object|null}
    */
-  function getPageState(pageName) {
-    return _pageStates[pageName] || null;
-  }
-
-  /**
-   * Get all page states.
-   * @returns {Object}
-   */
-  function getAllPageStates() {
-    return { ..._pageStates };
+  function getLastPageInfo() {
+    return _lastPageInfo || getPageInfo(_options.portalType);
   }
 
   /**
@@ -494,7 +279,7 @@ const OriginFillObserver = (() => {
    */
   function sendMessage(type, data) {
     try {
-      chrome.runtime.sendMessage({ type, data });
+      chrome.runtime.sendMessage({ type, data }).catch(() => {});
     } catch (err) {
       OriginFillLogger.debug('Observer message failed:', err.message);
     }
@@ -508,9 +293,9 @@ const OriginFillObserver = (() => {
     detectCurrentPage,
     getPageNumber,
     getTotalPages,
+    getPageInfo,
+    getLastPageInfo,
     countFormFields,
-    getPageState,
-    getAllPageStates,
 
     // Dynamic update methods
     updateProfile,

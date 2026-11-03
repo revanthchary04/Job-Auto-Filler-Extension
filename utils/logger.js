@@ -1,13 +1,13 @@
 /**
  * OriginFill — Debug Logger
  * Provides structured logging with [OriginFill] prefix.
- * Only outputs when ORIGINFILL_DEV_MODE is true.
+ * Only outputs when ORIGINFILL_DEV_MODE is true or debug logging is turned on in Settings.
  *
  * @license AGPL-3.0
  * @author CharyWorld
  */
 
-const OriginFillLogger = (() => {
+var OriginFillLogger = (() => {
   'use strict';
 
   const PREFIX = '%c[OriginFill]';
@@ -20,12 +20,24 @@ const OriginFillLogger = (() => {
     fill:  'color: #7C3AED; font-weight: bold;'
   };
 
+  /** @type {boolean} Set from the "Debug logging" setting */
+  let _enabledBySettings = false;
+
   /**
    * Check if logging is enabled.
    * Uses typeof check so it works even if constants.js hasn't loaded yet.
    */
   function isEnabled() {
-    return typeof ORIGINFILL_DEV_MODE !== 'undefined' && ORIGINFILL_DEV_MODE === true;
+    return _enabledBySettings ||
+      (typeof ORIGINFILL_DEV_MODE !== 'undefined' && ORIGINFILL_DEV_MODE === true);
+  }
+
+  /**
+   * Turn logging on or off at runtime (from the "Debug logging" setting).
+   * @param {boolean} enabled
+   */
+  function setEnabled(enabled) {
+    _enabledBySettings = !!enabled;
   }
 
   /**
@@ -116,6 +128,8 @@ const OriginFillLogger = (() => {
     error:      (msg, ...args) => log('error', msg, ...args),
     success:    (msg, ...args) => log('success', msg, ...args),
     fill:       (msg, ...args) => log('fill', msg, ...args),
+    setEnabled,
+    isEnabled,
     group,
     groupEnd,
     fillReport,

@@ -1,13 +1,16 @@
 /**
  * OriginFill — Session Timeout Detection & Recovery Guard
- * Detects session timeouts via URL redirects, DOM changes, and form disappearance.
- * Saves field snapshots on blur events for instant recovery.
+ * Saves what you type (never passwords, files or payment fields) so it can be restored if the
+ * portal logs you out, and detects those logouts.
+ *
+ * A timeout is reported only on real evidence: a "session expired" dialog, or a sign-in form
+ * appearing after you had entered data. Workday's normal "Create Account/Sign In" step is not one.
  *
  * @license AGPL-3.0
  * @author CharyWorld
  */
 
-const OriginFillSessionGuard = (() => {
+var OriginFillSessionGuard = (() => {
   'use strict';
 
   /** @type {boolean} Guard is active */
@@ -19,49 +22,57 @@ const OriginFillSessionGuard = (() => {
   /** @type {string} Detected portal type */
   let _portalType = '';
 
-  /** @type {MutationObserver|null} DOM watcher for login forms */
+  /** @type {MutationObserver|null} DOM watcher for login forms / timeout dialogs */
   let _domObserver = null;
 
-  /** @type {number} URL check interval ID */
+  /** @type {number|null} Debounce timer for DOM checks */
+  let _domCheckTimer = null;
+
+  /** @type {number|null} URL check interval ID */
   let _urlCheckInterval = null;
 
-  /** @type {number} Debounce timer for blur snapshots */
+  /** @type {number|null} Debounce timer for blur snapshots */
   let _blurDebounce = null;
 
   /** @type {boolean} Whether a timeout has already been detected */
   let _timeoutDetected = false;
 
-  // ─── Session Timeout Keywords ──────────────────────────────────
+  /** @type {boolean} The user has entered enough data on this page to be worth protecting */
+  let _hasUserData = false;
 
-  const TIMEOUT_URL_PATTERNS = [
-    /\/login/i,
-    /\/signin/i,
-    /\/sign-in/i,
+  /** @type {boolean} Whether a password field was visible at the last check */
+  let _passwordVisible = false;
+
+  /** @type {string} URL at the last check */
+  let _lastUrl = '';
+
+  /** Snapshots with fewer fields aren't treated as "work in progress" */
+  const MIN_FIELDS_TO_PROTECT = 3;
+
+  /** Recovery data older than this is discarded */
+  const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+  // ─── Session Timeout Signals ───────────────────────────────────
+
+  const LOGIN_URL_PATTERNS = [
+    /\/login\b/i,
+    /\/signin\b/i,
+    /\/sign-in\b/i,
     /\/session[-_]?expired/i,
     /\/session[-_]?timeout/i,
-    /\/authenticate/i,
-    /\/sso\//i,
-    /\/auth\//i,
-    /\/logout/i,
-    /returnurl=/i
+    /\/logout\b/i
   ];
 
-  const TIMEOUT_DOM_TEXT = [
-    'session has expired',
-    'session expired',
-    'session timed out',
-    'session timeout',
-    'your session has ended',
-    'you have been logged out',
-    'been signed out',
-    'been logged out',
-    'please log in again',
-    'please sign in again',
-    'login to continue',
-    'sign in to continue',
-    'for security reasons',
-    'inactivity'
+  const TIMEOUT_PHRASES = [
+    /\bsession\s+(has\s+)?(expired|timed\s*out|ended)\b/i,
+    /\byour\s+session\s+(will\s+|is\s+about\s+to\s+)?(expire|time\s*out)/i,
+    /\byou\s+(have\s+|'ve\s+)?been\s+(signed|logged)\s+out\b/i,
+    /\b(please\s+)?(sign|log)\s*in\s+again\b/i,
+    /\bdue\s+to\s+inactivity\b/i
   ];
+
+  const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [role="alert"], [aria-live="assertive"], ' +
+    '[data-automation-id="wd-popup-content"], [data-automation-id="errorMessage"], .modal, .modal-dialog';
 
   // ─── Guard Lifecycle ───────────────────────────────────────────
 
@@ -80,16 +91,27 @@ const OriginFillSessionGuard = (() => {
 
     _portalType = options.portalType || '';
     _applicationUrl = options.applicationUrl || window.location.href;
+    _lastUrl = window.location.href;
     _timeoutDetected = false;
+    _hasUserData = false;
+    _passwordVisible = isPasswordFormVisible();
 
-    // 1. Watch for URL redirects to login pages
-    startURLWatch();
+    // 1. Watch for redirects to login pages
+    _urlCheckInterval = setInterval(checkURL, 3000);
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
-    // 2. Watch DOM for login forms or timeout messages
-    startDOMWatch();
+    // 2. Watch the DOM for timeout dialogs and sign-in forms
+    _domObserver = new MutationObserver(() => {
+      if (_timeoutDetected || _domCheckTimer) return;
+      _domCheckTimer = setTimeout(() => {
+        _domCheckTimer = null;
+        checkDOM();
+      }, 1000);
+    });
+    _domObserver.observe(document.body, { childList: true, subtree: true });
 
-    // 3. Attach blur event handlers for field snapshots
-    attachBlurHandlers();
+    // 3. Save a snapshot whenever a field loses focus
+    document.addEventListener('focusout', handleFieldBlur, true);
 
     _active = true;
     OriginFillLogger.info('Session guard started');
@@ -109,164 +131,74 @@ const OriginFillSessionGuard = (() => {
       _domObserver = null;
     }
 
-    if (_blurDebounce) {
-      clearTimeout(_blurDebounce);
-      _blurDebounce = null;
-    }
+    clearTimeout(_domCheckTimer);
+    _domCheckTimer = null;
+    clearTimeout(_blurDebounce);
+    _blurDebounce = null;
 
-    detachBlurHandlers();
+    window.removeEventListener('beforeunload', handleBeforeUnload);
+    document.removeEventListener('focusout', handleFieldBlur, true);
 
     _active = false;
     OriginFillLogger.info('Session guard stopped');
   }
 
-  // ─── Method 1: URL Redirect Monitoring ─────────────────────────
+  // ─── Detection ─────────────────────────────────────────────────
 
   /**
-   * Periodically check if the URL has changed to a login page.
+   * A redirect to a login URL after the user entered data means the session ended.
    */
-  function startURLWatch() {
-    // Check immediately
-    checkURLForTimeout();
+  function checkURL() {
+    const currentUrl = window.location.href;
+    if (currentUrl === _lastUrl) return;
 
-    // Then check periodically (every 5 seconds — lightweight)
-    _urlCheckInterval = setInterval(checkURLForTimeout, 5000);
+    const previous = _lastUrl;
+    _lastUrl = currentUrl;
 
-    // Also listen for navigation events
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    const isLoginUrl = LOGIN_URL_PATTERNS.some(p => p.test(currentUrl));
+    const wasLoginUrl = LOGIN_URL_PATTERNS.some(p => p.test(previous));
+    if (_hasUserData && isLoginUrl && !wasLoginUrl) {
+      OriginFillLogger.warn(`Session timeout detected via URL redirect: ${currentUrl}`);
+      onTimeoutDetected('url_redirect');
+    }
   }
 
   /**
-   * Check the current URL for timeout indicators.
+   * Look for timeout dialogs, and for a sign-in form that wasn't there before.
    */
-  function checkURLForTimeout() {
-    const currentUrl = window.location.href;
+  function checkDOM() {
+    if (_timeoutDetected) return;
 
-    // Skip if we're still on the application page
-    if (currentUrl === _applicationUrl) return;
-
-    // Check for login/timeout URL patterns
-    for (const pattern of TIMEOUT_URL_PATTERNS) {
-      if (pattern.test(currentUrl)) {
-        OriginFillLogger.warn(`Session timeout detected via URL redirect: ${currentUrl}`);
-        onTimeoutDetected('url_redirect');
+    const dialogs = Array.from(document.querySelectorAll(DIALOG_SELECTOR)).filter(d => OriginFillDetector.isVisible(d));
+    for (const dialog of dialogs) {
+      const text = (dialog.textContent || '').slice(0, 1000);
+      if (TIMEOUT_PHRASES.some(p => p.test(text))) {
+        OriginFillLogger.warn('Session timeout detected via dialog text');
+        onTimeoutDetected('dialog');
         return;
       }
     }
+
+    const passwordVisible = isPasswordFormVisible();
+    if (passwordVisible && !_passwordVisible && _hasUserData) {
+      OriginFillLogger.warn('Session timeout detected: sign-in form replaced the application');
+      onTimeoutDetected('login_form');
+    }
+    _passwordVisible = passwordVisible;
+  }
+
+  function isPasswordFormVisible() {
+    return Array.from(document.querySelectorAll('input[type="password"]')).some(i => OriginFillDetector.isVisible(i));
   }
 
   /**
    * Handle beforeunload — save snapshot before navigation.
    */
   function handleBeforeUnload() {
-    // Save a final snapshot before the page unloads
     saveSnapshotNow();
   }
 
-  // ─── Method 2: DOM Monitoring ──────────────────────────────────
-
-  /**
-   * Watch for login forms or "session expired" messages appearing in the DOM.
-   */
-  function startDOMWatch() {
-    _domObserver = new MutationObserver((mutations) => {
-      if (_timeoutDetected) return;
-
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            checkNodeForTimeout(node);
-          }
-        }
-      }
-    });
-
-    _domObserver.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    // Also check current DOM state
-    checkNodeForTimeout(document.body);
-  }
-
-  /**
-   * Check a DOM node (and its text content) for timeout indicators.
-   *
-   * @param {HTMLElement} node
-   */
-  function checkNodeForTimeout(node) {
-    if (_timeoutDetected) return;
-
-    // Check for login form appearing
-    const loginForm = node.querySelector?.(
-      'form[action*="login"], form[action*="signin"], ' +
-      'input[type="password"], ' +
-      '[data-automation-id="signInForm"], ' +
-      '#loginForm, #signInForm, .login-form'
-    );
-
-    if (loginForm && !isPartOfApplication(loginForm)) {
-      OriginFillLogger.warn('Session timeout detected via login form appearance');
-      onTimeoutDetected('login_form');
-      return;
-    }
-
-    // Check text content for timeout messages
-    const textContent = (node.textContent || '').toLowerCase().slice(0, 2000);
-
-    for (const phrase of TIMEOUT_DOM_TEXT) {
-      if (textContent.includes(phrase)) {
-        OriginFillLogger.warn(`Session timeout detected via DOM text: "${phrase}"`);
-        onTimeoutDetected('dom_text');
-        return;
-      }
-    }
-
-    // Check if all form fields disappeared (form count dropped to 0)
-    const formFields = document.querySelectorAll(
-      'input:not([type="hidden"]):not([type="submit"]):not([type="password"]), select, textarea'
-    );
-    const visibleFields = Array.from(formFields).filter(f => OriginFillDetector.isVisible(f));
-
-    // If we had fields before and now they're gone, likely timeout
-    if (_applicationUrl && visibleFields.length === 0) {
-      const passwordFields = document.querySelectorAll('input[type="password"]');
-      if (passwordFields.length > 0) {
-        OriginFillLogger.warn('Session timeout detected: form fields gone, login form present');
-        onTimeoutDetected('fields_gone');
-      }
-    }
-  }
-
-  /**
-   * Check if a login form element is part of the application (not a timeout redirect).
-   * Some applications have inline authentication sections.
-   *
-   * @param {HTMLElement} element
-   * @returns {boolean}
-   */
-  function isPartOfApplication(element) {
-    // If we're still on the application URL, inline login might be legitimate
-    return window.location.href === _applicationUrl;
-  }
-
-  // ─── Method 3: Field Blur Snapshot ─────────────────────────────
-
-  /**
-   * Attach blur event handlers to all form fields.
-   * Saves a snapshot on each field blur (debounced).
-   */
-  function attachBlurHandlers() {
-    document.addEventListener('focusout', handleFieldBlur, true);
-  }
-
-  /**
-   * Detach blur event handlers.
-   */
-  function detachBlurHandlers() {
-    document.removeEventListener('focusout', handleFieldBlur, true);
-  }
+  // ─── Field Blur Snapshot ───────────────────────────────────────
 
   /**
    * Handle field blur — debounce and save snapshot.
@@ -278,16 +210,13 @@ const OriginFillSessionGuard = (() => {
 
     // Only snapshot if the target is a form field
     if (!target || !['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) return;
-    if (target.type === 'hidden' || target.type === 'submit' || target.type === 'button') return;
+    if (['hidden', 'submit', 'button', 'password', 'file'].includes(target.type)) return;
+    if (target.closest('[data-originfill-ui]')) return;
 
-    // Debounce — save at most once per 500ms
-    if (_blurDebounce) {
-      clearTimeout(_blurDebounce);
-    }
-
+    clearTimeout(_blurDebounce);
     _blurDebounce = setTimeout(() => {
       saveSnapshotAsync();
-    }, 500);
+    }, 800);
   }
 
   // ─── Snapshot Functions ────────────────────────────────────────
@@ -299,73 +228,69 @@ const OriginFillSessionGuard = (() => {
     try {
       const snapshot = OriginFillFiller.captureFieldSnapshot();
       const fieldCount = Object.keys(snapshot).length;
-
       if (fieldCount === 0) return;
 
-      await chrome.storage.local.set({
-        [OriginFillStorageKeys.SESSION_RECOVERY]: {
-          lastUrl: window.location.href,
-          lastPortal: _portalType,
-          savedFields: snapshot,
-          savedAt: new Date().toISOString()
-        }
-      });
-
+      _hasUserData = fieldCount >= MIN_FIELDS_TO_PROTECT;
+      await writeSnapshot(snapshot, false);
       OriginFillLogger.debug(`Snapshot saved: ${fieldCount} fields`);
     } catch (err) {
-      OriginFillLogger.error('Snapshot save failed:', err);
+      OriginFillLogger.debug('Snapshot save failed:', err.message);
     }
   }
 
   /**
-   * Save a snapshot synchronously (for beforeunload).
-   * Uses sendBeacon-style approach since async storage may not complete.
+   * Save a snapshot immediately (for beforeunload and timeouts). The storage write may not
+   * finish before the page unloads; the last blur snapshot is the safety net.
+   *
+   * @param {boolean} [timedOut=false]
    */
-  function saveSnapshotNow() {
+  function saveSnapshotNow(timedOut = false) {
     try {
       const snapshot = OriginFillFiller.captureFieldSnapshot();
       if (Object.keys(snapshot).length > 0) {
-        const fullData = {
-          lastUrl: window.location.href,
-          lastPortal: _portalType,
-          savedFields: snapshot,
-          savedAt: new Date().toISOString()
-        };
-
-        // SECURITY FIX: localStorage backup stores ONLY field identifiers, NOT values.
-        // This prevents personal data from being left in plaintext localStorage.
-        try {
-          const safeSnapshot = {};
-          for (const [key, fieldData] of Object.entries(snapshot)) {
-            safeSnapshot[key] = {
-              type: fieldData.type,
-              label: fieldData.label,
-              index: fieldData.index
-              // Intentionally omitting: value
-            };
-          }
-
-          const safeData = {
-            lastUrl: window.location.href,
-            lastPortal: _portalType,
-            savedFields: safeSnapshot,
-            savedAt: fullData.savedAt,
-            partial: true // Flag indicating values are missing
-          };
-
-          localStorage.setItem('originfill_emergency_snapshot', JSON.stringify(safeData));
-        } catch (e) {
-          // localStorage might not be available
-        }
-
-        // Full snapshot via async chrome.storage (may not complete before unload)
-        chrome.storage.local.set({
-          [OriginFillStorageKeys.SESSION_RECOVERY]: fullData
-        });
+        writeSnapshot(snapshot, timedOut).catch(() => {});
+      } else if (timedOut) {
+        markTimedOut().catch(() => {});
       }
     } catch (err) {
       // Suppress errors during unload
     }
+  }
+
+  /**
+   * Store a snapshot — but never let an emptier page (e.g. the form after signing back in)
+   * overwrite a snapshot taken when the session expired.
+   */
+  async function writeSnapshot(snapshot, timedOut) {
+    const key = OriginFillStorageKeys.SESSION_RECOVERY;
+    const fieldCount = Object.keys(snapshot).length;
+    const existing = (await chrome.storage.local.get(key))[key];
+
+    if (existing && existing.timedOut && !timedOut && isFresh(existing) &&
+        (existing.fieldCount || Object.keys(existing.savedFields || {}).length) > fieldCount) {
+      return;
+    }
+
+    await chrome.storage.local.set({
+      [key]: {
+        lastUrl: window.location.href,
+        lastPortal: _portalType,
+        savedFields: snapshot,
+        fieldCount,
+        timedOut,
+        savedAt: new Date().toISOString()
+      }
+    });
+  }
+
+  async function markTimedOut() {
+    const key = OriginFillStorageKeys.SESSION_RECOVERY;
+    const existing = (await chrome.storage.local.get(key))[key];
+    if (existing) await chrome.storage.local.set({ [key]: { ...existing, timedOut: true } });
+  }
+
+  function isFresh(recovery) {
+    return Date.now() - new Date(recovery.savedAt).getTime() < MAX_AGE_MS;
   }
 
   // ─── Timeout Handler ───────────────────────────────────────────
@@ -381,93 +306,53 @@ const OriginFillSessionGuard = (() => {
 
     OriginFillLogger.warn(`⚠️ Session timeout detected via: ${method}`);
 
-    // Save final snapshot
-    saveSnapshotNow();
+    // Keep what was typed; the form on screen may already be gone
+    saveSnapshotNow(true);
 
-    // Notify background service worker
+    // Background shows a notification and counts the recovery
     sendMessage(OriginFillMessages.SESSION_TIMEOUT, {
       url: _applicationUrl,
       portal: _portalType,
       method,
       timestamp: new Date().toISOString()
     });
-
-    // Show browser notification via background
-    sendMessage('SHOW_NOTIFICATION', {
-      title: '⚠️ Session Expired',
-      message: `Session expired on ${OriginFillDetector.getPortalDisplayName(_portalType)}. OriginFill saved your data.`,
-      url: _applicationUrl
-    });
   }
 
   // ─── Recovery Check ────────────────────────────────────────────
 
   /**
-   * Check if there's a session recovery available for the current page.
-   * Called when a page loads and form is detected as empty.
+   * Check if there's a session recovery available for the current page:
+   * same site, less than a day old, the page looks unfilled and the saved fields exist here.
    *
-   * @returns {Promise<Object|null>} Recovery data, or null if none
+   * @returns {Promise<Object|null>} Recovery data (with restorableCount), or null if none
    */
   async function checkRecoveryAvailable() {
     try {
-      // Check chrome.storage first
       const result = await chrome.storage.local.get(OriginFillStorageKeys.SESSION_RECOVERY);
-      let recovery = result[OriginFillStorageKeys.SESSION_RECOVERY];
+      const recovery = result[OriginFillStorageKeys.SESSION_RECOVERY];
+      if (!recovery || !recovery.savedFields || !recovery.lastUrl) return null;
 
-      // Check localStorage emergency backup
-      if (!recovery) {
-        const emergency = localStorage.getItem('originfill_emergency_snapshot');
-        if (emergency) {
-          recovery = JSON.parse(emergency);
-          // Move to chrome.storage
-          await chrome.storage.local.set({
-            [OriginFillStorageKeys.SESSION_RECOVERY]: recovery
-          });
-          localStorage.removeItem('originfill_emergency_snapshot');
-        }
-      }
+      // Same site only
+      if (new URL(recovery.lastUrl).hostname !== window.location.hostname) return null;
 
-      if (!recovery || !recovery.savedFields) return null;
-
-      // Check if recovery is relevant to current page
-      const currentUrl = window.location.href;
-      const recoveryUrl = recovery.lastUrl;
-
-      // Same domain check
-      const currentDomain = new URL(currentUrl).hostname;
-      const recoveryDomain = new URL(recoveryUrl).hostname;
-
-      if (currentDomain !== recoveryDomain) return null;
-
-      // Check age — expire after 24 hours
-      const savedAt = new Date(recovery.savedAt);
-      const age = Date.now() - savedAt.getTime();
-      const MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
-
-      if (age > MAX_AGE) {
+      if (!isFresh(recovery)) {
         OriginFillLogger.debug('Recovery data expired (>24h)');
         await clearRecovery();
         return null;
       }
 
-      // Check if form is currently empty (fresh session)
-      const currentSnapshot = OriginFillFiller.captureFieldSnapshot();
-      const filledFieldCount = Object.values(currentSnapshot).filter(
-        f => f.value && f.value !== '' && f.value !== false
-      ).length;
+      // The form on screen must be (nearly) empty — otherwise there's nothing to recover
+      const current = OriginFillFiller.captureFieldSnapshot();
+      if (Object.keys(current).length > 3) return null;
 
-      if (filledFieldCount > 3) {
-        OriginFillLogger.debug('Form already has data, skipping recovery');
-        return null;
-      }
+      const restorableCount = OriginFillFiller.countRestorable(recovery.savedFields);
+      if (restorableCount === 0) return null;
 
-      const fieldCount = Object.keys(recovery.savedFields).length;
-      OriginFillLogger.info(`Recovery available: ${fieldCount} fields from ${recovery.savedAt}`);
-
-      return recovery;
+      OriginFillLogger.info(`Recovery available: ${restorableCount} fields from ${recovery.savedAt}`);
+      return { ...recovery, restorableCount };
 
     } catch (err) {
-      OriginFillLogger.error('Recovery check failed:', err);
+      OriginFillLogger.debug('Recovery check failed:', err.message);
       return null;
     }
   }
@@ -478,7 +363,6 @@ const OriginFillSessionGuard = (() => {
    */
   async function clearRecovery() {
     await chrome.storage.local.remove(OriginFillStorageKeys.SESSION_RECOVERY);
-    localStorage.removeItem('originfill_emergency_snapshot');
     OriginFillLogger.debug('Recovery data cleared');
   }
 
@@ -505,7 +389,7 @@ const OriginFillSessionGuard = (() => {
    */
   function sendMessage(type, data) {
     try {
-      chrome.runtime.sendMessage({ type, data });
+      chrome.runtime.sendMessage({ type, data }).catch(() => {});
     } catch (err) {
       OriginFillLogger.debug('Session guard message failed:', err.message);
     }

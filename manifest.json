@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "OriginFill",
-  "version": "1.0.0",
-  "description": "Auto-fill Workday job applications instantly. Recover lost data after session timeouts. Never lose a job application form again.",
+  "name": "OriginFill — Job Application Autofill",
+  "short_name": "OriginFill",
+  "version": "1.4.0",
+  "description": "Fill Workday job applications in one click: name, contact, work history, education, résumé. Saves your answers if the session times out.",
   "author": "CharyWorld",
+  "minimum_chrome_version": "111",
   "icons": {
     "16": "assets/icons/icon16.png",
     "32": "assets/icons/icon32.png",
@@ -20,72 +22,76 @@
     "default_title": "OriginFill — Auto-fill job applications"
   },
   "background": {
-    "service_worker": "background/service-worker.js",
-    "type": "module"
+    "service_worker": "background/service-worker.js"
   },
   "content_scripts": [
     {
       "matches": [
         "*://*.myworkdayjobs.com/*",
-        "*://*.wd1.myworkdayjobs.com/*",
-        "*://*.wd2.myworkdayjobs.com/*",
-        "*://*.wd3.myworkdayjobs.com/*",
-        "*://*.wd4.myworkdayjobs.com/*",
-        "*://*.wd5.myworkdayjobs.com/*",
         "*://*.myworkday.com/*",
-        "*://*.wd1.myworkday.com/*",
-        "*://*.wd2.myworkday.com/*",
-        "*://*.wd3.myworkday.com/*",
-        "*://*.wd4.myworkday.com/*",
-        "*://*.wd5.myworkday.com/*",
-        "*://*.greenhouse.io/*",
-        "*://*.lever.co/*",
+        "*://*.myworkdaysite.com/*",
         "*://*.icims.com/*",
-        "*://*.taleo.net/*"
+        "*://*.taleo.net/*",
+        "*://*.yello.co/*"
       ],
       "js": [
         "utils/constants.js",
         "utils/logger.js",
+        "utils/dom-actions.js",
         "utils/fuzzy-match.js",
         "utils/field-mapper.js",
-        "storage/encryption.js",
-        "storage/store.js",
+        "utils/faq.js",
         "content/portals/workday.js",
         "content/portals/generic.js",
         "content/detector.js",
         "content/filler.js",
         "content/observer.js",
         "content/session-guard.js",
+        "content/panel.js",
         "content/init.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.greenhouse.io/*",
+        "*://*.lever.co/*"
+      ],
+      "js": [
+        "utils/constants.js",
+        "utils/logger.js",
+        "utils/dom-actions.js",
+        "utils/fuzzy-match.js",
+        "utils/field-mapper.js",
+        "utils/faq.js",
+        "content/portals/workday.js",
+        "content/portals/generic.js",
+        "content/detector.js",
+        "content/filler.js",
+        "content/observer.js",
+        "content/session-guard.js",
+        "content/panel.js",
+        "content/init.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "permissions": [
     "activeTab",
     "storage",
     "scripting",
-    "notifications",
-    "tabs",
-    "alarms"
+    "notifications"
   ],
   "host_permissions": [
     "*://*.myworkdayjobs.com/*",
-    "*://*.wd1.myworkdayjobs.com/*",
-    "*://*.wd2.myworkdayjobs.com/*",
-    "*://*.wd3.myworkdayjobs.com/*",
-    "*://*.wd4.myworkdayjobs.com/*",
-    "*://*.wd5.myworkdayjobs.com/*",
     "*://*.myworkday.com/*",
-    "*://*.wd1.myworkday.com/*",
-    "*://*.wd2.myworkday.com/*",
-    "*://*.wd3.myworkday.com/*",
-    "*://*.wd4.myworkday.com/*",
-    "*://*.wd5.myworkday.com/*",
+    "*://*.myworkdaysite.com/*",
     "*://*.greenhouse.io/*",
     "*://*.lever.co/*",
     "*://*.icims.com/*",
-    "*://*.taleo.net/*"
+    "*://*.taleo.net/*",
+    "*://*.yello.co/*"
   ],
   "commands": {
     "_execute_action": {

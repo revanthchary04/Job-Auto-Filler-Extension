@@ -1,21 +1,16 @@
 /**
  * OriginFill — Shared Constants
+ * Loaded first in every context (content scripts, popup, settings).
+ *
+ * Declared with `var` so the content-script bundle can be injected again into a tab whose
+ * earlier copy was orphaned by an extension update, without "already declared" errors.
+ *
  * @license AGPL-3.0
  * @author CharyWorld
  */
 
-// ─── Runtime Bootstrap Marker ────────────────────────────────────
-// Sets an immediate lock when the first script loads to prevent race 
-// conditions during on-demand injection.
-if (typeof window !== 'undefined') {
-  window.__originfillRuntime = {
-    version: '1.0.0',
-    initialized: true
-  };
-}
-
 // ─── Portal Types ────────────────────────────────────────────────
-const OriginFillPortals = Object.freeze({
+var OriginFillPortals = Object.freeze({
   WORKDAY: 'workday',
   GREENHOUSE: 'greenhouse',
   LEVER: 'lever',
@@ -26,8 +21,8 @@ const OriginFillPortals = Object.freeze({
 });
 
 // ─── Portal URL Patterns ─────────────────────────────────────────
-const OriginFillPortalPatterns = Object.freeze([
-  { type: OriginFillPortals.WORKDAY,    pattern: /myworkday(jobs)?\.com/i },
+var OriginFillPortalPatterns = Object.freeze([
+  { type: OriginFillPortals.WORKDAY,    pattern: /myworkday(jobs|site)?\.com/i },
   { type: OriginFillPortals.GREENHOUSE, pattern: /greenhouse\.io/i },
   { type: OriginFillPortals.LEVER,      pattern: /lever\.co/i },
   { type: OriginFillPortals.ICIMS,      pattern: /icims\.com/i },
@@ -35,7 +30,7 @@ const OriginFillPortalPatterns = Object.freeze([
 ]);
 
 // ─── Detection Confidence Levels ─────────────────────────────────
-const OriginFillConfidence = Object.freeze({
+var OriginFillConfidence = Object.freeze({
   HIGH: 'high',       // URL + DOM confirmation
   MEDIUM: 'medium',   // URL match only
   LOW: 'low',         // DOM heuristics only
@@ -43,7 +38,7 @@ const OriginFillConfidence = Object.freeze({
 });
 
 // ─── Fill Status ─────────────────────────────────────────────────
-const OriginFillStatus = Object.freeze({
+var OriginFillStatus = Object.freeze({
   SUCCESS: 'success',
   ATTENTION: 'attention',   // Filled but may need review (fuzzy match, fallback)
   FAILED: 'failed',
@@ -52,7 +47,7 @@ const OriginFillStatus = Object.freeze({
 });
 
 // ─── Field Types ─────────────────────────────────────────────────
-const OriginFillFieldTypes = Object.freeze({
+var OriginFillFieldTypes = Object.freeze({
   TEXT: 'text',
   EMAIL: 'email',
   PHONE: 'phone',
@@ -64,16 +59,17 @@ const OriginFillFieldTypes = Object.freeze({
   DATE: 'date',
   FILE: 'file',
   RICHTEXT: 'richtext',      // contenteditable divs
-  COMBOBOX: 'combobox',       // Workday custom dropdowns
+  COMBOBOX: 'combobox',       // Custom dropdowns
   NUMBER: 'number'
 });
 
 // ─── Message Types (content ↔ popup ↔ background) ────────────────
-const OriginFillMessages = Object.freeze({
+var OriginFillMessages = Object.freeze({
   // Detection
   GET_PORTAL_INFO: 'GET_PORTAL_INFO',
   PORTAL_DETECTED: 'PORTAL_DETECTED',
   DETECT_ON_DEMAND: 'DETECT_ON_DEMAND',
+  INJECT_RUNTIME: 'INJECT_RUNTIME',
 
   // Filling
   FILL_ALL: 'FILL_ALL',
@@ -81,12 +77,19 @@ const OriginFillMessages = Object.freeze({
   FILL_PROGRESS: 'FILL_PROGRESS',
   FILL_COMPLETE: 'FILL_COMPLETE',
   FILL_ERROR: 'FILL_ERROR',
+  CANCEL_FILL: 'CANCEL_FILL',
+
+  // Profiles (encrypted) and résumés (IndexedDB) stay in the extension; content scripts ask for them
+  GET_PROFILE: 'GET_PROFILE',
+  GET_RESUME: 'GET_RESUME',
+  SAVE_FAQ_ANSWER: 'SAVE_FAQ_ANSWER', // A common question answered in the page's report
 
   // Session
   SESSION_TIMEOUT: 'SESSION_TIMEOUT',
   SESSION_SNAPSHOT_SAVED: 'SESSION_SNAPSHOT_SAVED',
   SESSION_RESTORE: 'SESSION_RESTORE',
   SESSION_RESTORED: 'SESSION_RESTORED',
+  SHOW_NOTIFICATION: 'SHOW_NOTIFICATION',
 
   // Observer
   PAGE_CHANGED: 'PAGE_CHANGED',
@@ -94,6 +97,7 @@ const OriginFillMessages = Object.freeze({
   // Storage
   PROFILE_UPDATED: 'PROFILE_UPDATED',
   SETTINGS_UPDATED: 'SETTINGS_UPDATED',
+  OPEN_SETTINGS: 'OPEN_SETTINGS',
 
   // Stats
   STATS_UPDATED: 'STATS_UPDATED',
@@ -105,7 +109,7 @@ const OriginFillMessages = Object.freeze({
 });
 
 // ─── Fill Sections ───────────────────────────────────────────────
-const OriginFillSections = Object.freeze({
+var OriginFillSections = Object.freeze({
   PERSONAL: 'personal',
   EDUCATION: 'education',
   WORK_EXPERIENCE: 'workExperience',
@@ -115,7 +119,7 @@ const OriginFillSections = Object.freeze({
 });
 
 // ─── Storage Keys ────────────────────────────────────────────────
-const OriginFillStorageKeys = Object.freeze({
+var OriginFillStorageKeys = Object.freeze({
   PROFILES: 'originfill_profiles',
   SETTINGS: 'originfill_settings',
   SESSION_RECOVERY: 'originfill_session_recovery',
@@ -125,12 +129,12 @@ const OriginFillStorageKeys = Object.freeze({
 });
 
 // ─── Default Profile Template ────────────────────────────────────
-const OriginFillDefaultProfile = Object.freeze({
+var OriginFillDefaultProfile = Object.freeze({
   id: '',
   label: 'Default Profile',
   isDefault: true,
   colorTag: '#2563EB',
-  schemaVersion: 2,
+  schemaVersion: 4,
   personal: {
     firstName: '',
     middleName: '',
@@ -139,15 +143,28 @@ const OriginFillDefaultProfile = Object.freeze({
     prefix: '',
     email: '',
     phone: '',
+    phoneType: 'Mobile',
+    phoneCountryCode: '',
     address: '',
+    address2: '',
     city: '',
     state: '',
     country: '',
     zipCode: '',
     linkedIn: '',
     github: '',
-    portfolio: ''
+    portfolio: '',
+    websites: []
   },
+  // Answers to questions most applications ask the same way
+  application: {
+    referralSource: '',       // "How did you hear about us?"
+    previouslyEmployed: ''    // "Have you previously worked for …?" — '', 'Yes' or 'No'
+  },
+  // User-written answers for screening questions: [{ question: 'require sponsorship', answer: 'No' }]
+  answers: [],
+  // Answers to OriginFill's built-in common questions (utils/faq.js): { disability: 'No', noticePeriod: '30 days' }
+  faq: {},
   education: [
     {
       institution: '',
@@ -174,6 +191,7 @@ const OriginFillDefaultProfile = Object.freeze({
   certifications: [],
   languages: [],
   resume: {
+    defaultId: '',   // Resume used for autofill (first upload when empty)
     fileName: '',
     fileData: '',    // Stored in IndexedDB, not here
     uploadedAt: ''
@@ -181,20 +199,23 @@ const OriginFillDefaultProfile = Object.freeze({
 });
 
 // ─── Default Settings ────────────────────────────────────────────
-const OriginFillDefaultSettings = Object.freeze({
+var OriginFillDefaultSettings = Object.freeze({
   activeProfileId: '',
   autoDetect: true,
   autoFillOnDetect: false,
+  showFloatingButton: true,  // In-page "Autofill" button on application pages
+  overwriteExisting: true,   // Replace values already in a field with profile values
   showNotifications: true,
   recoveryEnabled: true,
-  fillDelay: 300,            // ms between field fills
+  fillDelay: 150,            // ms between field fills
   theme: 'system',           // 'light' | 'dark' | 'system'
+  debugLogging: false,       // Verbose [OriginFill] console logs for troubleshooting
   useEncryption: true,
   usePassphrase: false       // Advanced: user-defined passphrase
 });
 
 // ─── Default Stats ───────────────────────────────────────────────
-const OriginFillDefaultStats = Object.freeze({
+var OriginFillDefaultStats = Object.freeze({
   totalFills: 0,
   totalFieldsFilled: 0,
   totalRecoveries: 0,
@@ -205,20 +226,24 @@ const OriginFillDefaultStats = Object.freeze({
 });
 
 // ─── Timing Constants ────────────────────────────────────────────
-const OriginFillTiming = Object.freeze({
-  FILL_DELAY_DEFAULT: 300,       // ms between each field fill
-  FILL_DELAY_MIN: 100,
+var OriginFillTiming = Object.freeze({
+  FILL_DELAY_DEFAULT: 150,       // ms between each field fill
+  FILL_DELAY_MIN: 0,
   FILL_DELAY_MAX: 1000,
-  OBSERVER_DEBOUNCE: 100,        // ms debounce for MutationObserver
-  FIELD_RETRY_DELAY: 500,        // ms before retrying failed field
-  FIELD_RETRY_MAX: 3,            // max retries per field
+  OBSERVER_DEBOUNCE: 300,        // ms debounce for MutationObserver
+  FIELD_RETRY_DELAY: 400,        // ms before retrying failed field
+  FIELD_RETRY_MAX: 2,            // max attempts per field
+  DROPDOWN_TIMEOUT: 2500,        // ms to wait for a dropdown list to open
+  SEARCH_TIMEOUT: 5000,          // ms to wait for search results in prompt fields
+  UPLOAD_TIMEOUT: 15000,         // ms to wait for a résumé upload to be confirmed
+  SECTION_ADD_TIMEOUT: 4000,     // ms to wait for an added Work/Education entry to render
   SESSION_PING_INTERVAL: 60000,  // 60s background ping
   VALIDATION_WAIT: 500,          // ms to wait for validation to clear
   POPUP_RENDER_TARGET: 100       // ms target for popup render
 });
 
 // ─── Fuzzy Match Thresholds ──────────────────────────────────────
-const OriginFillFuzzyConfig = Object.freeze({
+var OriginFillFuzzyConfig = Object.freeze({
   MAX_DISTANCE_RATIO: 0.30,     // Max Levenshtein distance as % of string length
   MIN_KEYWORD_MATCH_RATIO: 0.5, // Min keywords that must match
   FALLBACK_OPTIONS: [
@@ -229,14 +254,14 @@ const OriginFillFuzzyConfig = Object.freeze({
 });
 
 // ─── Confidence Thresholds (numeric) ─────────────────────────────
-const OriginFillConfidenceThresholds = Object.freeze({
+var OriginFillConfidenceThresholds = Object.freeze({
   AUTO_FILL: 0.80,    // >= 80% confidence → safe automatic fill
   FLAG_REVIEW: 0.60,  // 60-79% → fill but flag for review
   SKIP: 0.40          // < 40% → do not fill
 });
 
 // ─── Confidence String → Numeric Map ─────────────────────────────
-const OriginFillConfidenceScores = Object.freeze({
+var OriginFillConfidenceScores = Object.freeze({
   exact: 1.00,
   high: 0.95,
   medium: 0.80,
@@ -244,26 +269,8 @@ const OriginFillConfidenceScores = Object.freeze({
   none: 0.00
 });
 
-// ─── Sensitive Question Keywords ─────────────────────────────────
-// Fields matching these must NOT be auto-filled; flagged for user review
-const OriginFillSensitiveKeywords = Object.freeze([
-  'work authorization', 'authorized to work', 'legally authorized',
-  'sponsorship', 'visa sponsor', 'require sponsorship', 'need sponsorship',
-  'criminal', 'convicted', 'felony', 'misdemeanor', 'background check',
-  'disability', 'disabled', 'accommodation',
-  'veteran', 'military', 'armed forces', 'protected veteran',
-  'gender', 'sex', 'pronoun',
-  'race', 'ethnicity', 'ethnic', 'hispanic', 'latino',
-  'salary', 'compensation', 'pay expectation', 'desired salary', 'expected salary',
-  'relocate', 'relocation', 'willing to relocate',
-  'why do you want', 'why should we hire', 'tell us about yourself',
-  'cover letter', 'additional information',
-  'agree to terms', 'i agree', 'i certify', 'i acknowledge',
-  'years of experience'
-]);
-
 // ─── UI Constants ────────────────────────────────────────────────
-const OriginFillUI = Object.freeze({
+var OriginFillUI = Object.freeze({
   POPUP_WIDTH: 340,
   POPUP_MAX_HEIGHT: 480,
   MAX_RESUME_SIZE_MB: 5,
@@ -277,7 +284,7 @@ const OriginFillUI = Object.freeze({
 });
 
 // ─── Encryption Constants ────────────────────────────────────────
-const OriginFillCrypto = Object.freeze({
+var OriginFillCrypto = Object.freeze({
   ALGORITHM: 'AES-GCM',
   KEY_LENGTH: 256,
   IV_LENGTH: 12,                  // bytes
@@ -287,14 +294,14 @@ const OriginFillCrypto = Object.freeze({
 });
 
 // ─── IndexedDB Constants ─────────────────────────────────────────
-const OriginFillIDB = Object.freeze({
+var OriginFillIDB = Object.freeze({
   DB_NAME: 'OriginFillDB',
   DB_VERSION: 1,
   STORE_RESUMES: 'resumes'
 });
 
 // ─── Dev Mode ────────────────────────────────────────────────────
-const ORIGINFILL_DEV_MODE = false; // Set to true for debug logging
+var ORIGINFILL_DEV_MODE = false; // Set to true for debug logging (or enable it in Settings)
 
 // ─── Average manual fill time (for stats calculation) ────────────
-const ORIGINFILL_AVG_MANUAL_FILL_MINUTES = 25;
+var ORIGINFILL_AVG_MANUAL_FILL_MINUTES = 5; // per application page
